@@ -166,7 +166,9 @@ class YahooLocalSearchService implements PlaceSearchService {
       'appid': _apiKey,
       'query': query,
       'output': 'json',
-      'results': '15',
+      'detail': 'full',
+      'results': '20',
+      if (baseLocation != null) 'sort': 'geo',
       if (baseLocation != null) 'lat': '${baseLocation.lat}',
       if (baseLocation != null) 'lon': '${baseLocation.lng}',
       if (nearbyOnly) 'dist': '1.2',
@@ -177,8 +179,9 @@ class YahooLocalSearchService implements PlaceSearchService {
     }
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    final features = (decoded['Feature'] as List<dynamic>? ?? const [])
-        .cast<Map<String, dynamic>>();
+    final features = (decoded['Feature'] as List<dynamic>? ?? const []).map(
+      (item) => Map<String, dynamic>.from(item as Map),
+    );
 
     return features.map((item) {
       final geometry = (item['Geometry'] as Map<String, dynamic>? ?? const {});
@@ -186,20 +189,37 @@ class YahooLocalSearchService implements PlaceSearchService {
         ',',
       );
       final property = (item['Property'] as Map<String, dynamic>? ?? const {});
-      final floorLabel = property['FloorName'] as String? ?? '';
-      final station = property['Building'] as String? ?? '';
+      final placeInfo =
+          (property['PlaceInfo'] as Map<String, dynamic>? ?? const {});
+      final building =
+          (property['Building'] as Map<String, dynamic>? ?? const {});
+      final genres = (property['Genre'] as List<dynamic>? ?? const []).map(
+        (item) => Map<String, dynamic>.from(item as Map),
+      );
+      final floorLabel =
+          placeInfo['FloorName'] as String? ??
+          building['Floor']?.toString() ??
+          '';
+      final buildingName = building['Name'] as String? ?? '';
+      final category = genres
+          .map((item) => item['Name'] as String?)
+          .whereType<String>()
+          .where((item) => item.isNotEmpty)
+          .join(', ');
+      final providerPlaceId =
+          (item['Gid'] as String?) ?? (item['Id'] as String?) ?? 'unknown';
       return Place(
-        id: 'yahoo-${item['Id']}',
+        id: 'yahoo-$providerPlaceId',
         provider: 'yahoo',
-        providerPlaceId: '${item['Id']}',
+        providerPlaceId: providerPlaceId,
         name: item['Name'] as String? ?? query,
         lat: double.tryParse(coordinates.elementAtOrNull(1) ?? '') ?? 0,
         lng: double.tryParse(coordinates.elementAtOrNull(0) ?? '') ?? 0,
         address: property['Address'] as String? ?? '',
-        buildingName: station,
+        buildingName: buildingName,
         floorLabel: floorLabel,
         floorNumber: parseFloorNumber(floorLabel),
-        category: ((property['Genre'] as List<dynamic>?)?.join(', ')) ?? '',
+        category: category,
         rawPayload: jsonEncode(item),
       );
     }).toList();

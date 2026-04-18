@@ -46,10 +46,31 @@ MVP要件を満たすには、少なくとも店舗検索用の外部APIが必�
 ### 認証情報
 
 - `YAHOO_API_KEY=...`
+- または `YAHOO_CLIENT_ID=...`
 
 必要になった時点で、将来拡張として以下を追加:
 
 - `GOOGLE_PLACES_API_KEY=...`
+
+## 設定ファイル
+
+ローカルでは `assets/config/.env` または `assets/config/.vars` に記載する。
+
+`.env` 例:
+
+```dotenv
+PLACE_SEARCH_PROVIDER=yahoo
+YAHOO_API_KEY=YOUR_YAHOO_CLIENT_ID
+```
+
+`.vars` 例:
+
+```dotenv
+PLACE_SEARCH_PROVIDER=mock
+YAHOO_CLIENT_ID=
+```
+
+優先順位は `.env` -> `.vars` -> `--dart-define`。
 
 ## Flutter実行時の指定例
 

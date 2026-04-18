@@ -1,0 +1,3 @@
+# ReachTrail local config
+PLACE_SEARCH_PROVIDER=mock
+YAHOO_CLIENT_ID=

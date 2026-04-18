@@ -5,17 +5,12 @@ import 'package:flutter/material.dart';
 import 'models/base_location.dart';
 import 'models/lunch_challenge_record.dart';
 import 'models/place.dart';
+import 'services/local_config_service.dart';
 import 'services/persistence_service.dart';
 import 'services/place_search_service.dart';
 import 'utils/distance_calculator.dart';
 import 'utils/floor_parser.dart';
 import 'utils/score_calculator.dart';
-
-const _provider = String.fromEnvironment(
-  'PLACE_SEARCH_PROVIDER',
-  defaultValue: 'mock',
-);
-const _yahooApiKey = String.fromEnvironment('YAHOO_API_KEY', defaultValue: '');
 
 class ReachTrailApp extends StatefulWidget {
   const ReachTrailApp({super.key});
@@ -32,9 +27,7 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
     super.initState();
     _controller = ReachTrailController(
       persistence: PersistenceService(),
-      searchService: CompositePlaceSearchService(
-        const SearchConfig(provider: _provider, yahooApiKey: _yahooApiKey),
-      ),
+      configService: LocalConfigService(),
     )..load();
   }
 
@@ -70,16 +63,19 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
 class ReachTrailController extends ChangeNotifier {
   ReachTrailController({
     required PersistenceService persistence,
-    required PlaceSearchService searchService,
+    required LocalConfigService configService,
   }) : _persistence = persistence,
-       _searchService = searchService;
+       _configService = configService;
 
   final PersistenceService _persistence;
-  final PlaceSearchService _searchService;
+  final LocalConfigService _configService;
+  PlaceSearchService? _searchService;
 
   bool isBootstrapping = true;
   bool isSearching = false;
   String? errorMessage;
+  String placeSearchProvider = 'mock';
+  String yahooApiKey = '';
   BaseLocation? baseLocation;
   List<Place> places = const [];
   List<LunchChallengeRecord> records = const [];
@@ -89,11 +85,27 @@ class ReachTrailController extends ChangeNotifier {
   Future<void> load() async {
     isBootstrapping = true;
     notifyListeners();
+    final config = await _configService.load();
+    _applyConfig(config);
     baseLocation = await _persistence.loadBaseLocation();
     places = await _persistence.loadPlaces();
     records = await _persistence.loadRecords();
     isBootstrapping = false;
     notifyListeners();
+  }
+
+  Future<void> reloadConfig() async {
+    final config = await _configService.load();
+    _applyConfig(config);
+    notifyListeners();
+  }
+
+  void _applyConfig(LocalConfig config) {
+    placeSearchProvider = config.placeSearchProvider;
+    yahooApiKey = config.yahooApiKey;
+    _searchService = CompositePlaceSearchService(
+      SearchConfig(provider: placeSearchProvider, yahooApiKey: yahooApiKey),
+    );
   }
 
   Future<void> saveBaseLocation({
@@ -119,7 +131,7 @@ class ReachTrailController extends ChangeNotifier {
     errorMessage = null;
     notifyListeners();
     try {
-      searchResults = await _searchService.search(
+      searchResults = await _searchService!.search(
         query: query,
         baseLocation: baseLocation,
         nearbyOnly: nearbyOnly,
@@ -137,6 +149,7 @@ class ReachTrailController extends ChangeNotifier {
   }
 
   Future<void> saveRecord({
+    String? recordId,
     required Place place,
     required DateTime visitedAt,
     required int timeLimitMinutes,
@@ -164,7 +177,7 @@ class ReachTrailController extends ChangeNotifier {
     );
     final savedPlace = _upsertPlace(place);
     final record = LunchChallengeRecord(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      id: recordId ?? DateTime.now().microsecondsSinceEpoch.toString(),
       baseLocationId: currentBase.id,
       placeId: savedPlace.id,
       placeSnapshot: savedPlace.toJson(),
@@ -179,7 +192,13 @@ class ReachTrailController extends ChangeNotifier {
       difficultyScore: score,
       scoreVersion: currentScoreVersion,
     );
-    records = [record, ...records];
+    if (recordId == null) {
+      records = [record, ...records];
+    } else {
+      records = records
+          .map((item) => item.id == recordId ? record : item)
+          .toList();
+    }
     await _persistence.savePlaces(places);
     await _persistence.saveRecords(records);
     notifyListeners();
@@ -328,7 +347,8 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
             padding: const EdgeInsets.only(right: 16),
             child: Center(
               child: Text(
-                _provider == 'mock' || _yahooApiKey.isEmpty
+                controller.placeSearchProvider == 'mock' ||
+                        controller.yahooApiKey.isEmpty
                     ? 'Mock Search'
                     : 'Yahoo Search',
               ),
@@ -485,9 +505,15 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
             children: [
               _MetricTile(
                 label: '検索プロバイダ',
-                value: _provider == 'mock' || _yahooApiKey.isEmpty
+                value:
+                    controller.placeSearchProvider == 'mock' ||
+                        controller.yahooApiKey.isEmpty
                     ? 'Mock fallback'
                     : 'Yahoo API',
+              ),
+              _MetricTile(
+                label: 'Yahoo API Key',
+                value: controller.yahooApiKey.isEmpty ? '未設定' : '設定済み',
               ),
               _MetricTile(
                 label: '登録記録数',
@@ -498,6 +524,22 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                 value: base == null
                     ? '未設定'
                     : '${base.name} (${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)})',
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await controller.reloadConfig();
+                    if (!context.mounted) {
+                      return;
+                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('設定ファイルを再読み込みしました。')),
+                    );
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('設定を再読込'),
+                ),
               ),
             ],
           ),
@@ -711,10 +753,15 @@ class _PlaceResultTile extends StatelessWidget {
 }
 
 class _RecordSheet extends StatefulWidget {
-  const _RecordSheet({required this.controller, this.initialPlace});
+  const _RecordSheet({
+    required this.controller,
+    this.initialPlace,
+    this.existingRecord,
+  });
 
   final ReachTrailController controller;
   final Place? initialPlace;
+  final LunchChallengeRecord? existingRecord;
 
   @override
   State<_RecordSheet> createState() => _RecordSheetState();
@@ -757,11 +804,23 @@ class _RecordSheetState extends State<_RecordSheet> {
     _latController = TextEditingController(text: place?.lat.toString() ?? '');
     _lngController = TextEditingController(text: place?.lng.toString() ?? '');
     _categoryController = TextEditingController(text: place?.category ?? '');
-    _menuController = TextEditingController();
-    _priceController = TextEditingController();
-    _paymentController = TextEditingController();
-    _memoController = TextEditingController();
-    _timeLimitController = TextEditingController(text: '60');
+    _menuController = TextEditingController(
+      text: widget.existingRecord?.menu ?? '',
+    );
+    _priceController = TextEditingController(
+      text: widget.existingRecord?.price?.toString() ?? '',
+    );
+    _paymentController = TextEditingController(
+      text: widget.existingRecord?.paymentMethod ?? '',
+    );
+    _memoController = TextEditingController(
+      text: widget.existingRecord?.memo ?? '',
+    );
+    _timeLimitController = TextEditingController(
+      text: '${widget.existingRecord?.timeLimitMinutes ?? 60}',
+    );
+    _dineType = widget.existingRecord?.dineType ?? DineType.dineIn;
+    _visitedAt = widget.existingRecord?.visitedAt ?? DateTime.now();
   }
 
   @override
@@ -801,7 +860,11 @@ class _RecordSheetState extends State<_RecordSheet> {
             spacing: 14,
             children: [
               Text(
-                widget.initialPlace == null ? '手入力で記録' : '候補から記録',
+                widget.existingRecord != null
+                    ? '記録を編集'
+                    : widget.initialPlace == null
+                    ? '手入力で記録'
+                    : '候補から記録',
                 style: Theme.of(context).textTheme.headlineSmall,
               ),
               TextFormField(
@@ -948,7 +1011,13 @@ class _RecordSheetState extends State<_RecordSheet> {
                 alignment: Alignment.centerRight,
                 child: FilledButton(
                   onPressed: _submitting ? null : _submit,
-                  child: Text(_submitting ? '保存中...' : '保存する'),
+                  child: Text(
+                    _submitting
+                        ? '保存中...'
+                        : widget.existingRecord == null
+                        ? '保存する'
+                        : '更新する',
+                  ),
                 ),
               ),
             ],
@@ -1015,6 +1084,7 @@ class _RecordSheetState extends State<_RecordSheet> {
           widget.initialPlace?.rawPayload ?? jsonEncode({'source': 'manual'}),
     );
     await widget.controller.saveRecord(
+      recordId: widget.existingRecord?.id,
       place: place,
       visitedAt: _visitedAt,
       timeLimitMinutes: int.parse(_timeLimitController.text.trim()),
@@ -1146,7 +1216,25 @@ class _RecordsTab extends StatelessWidget {
                 const Text('まだ記録がありません。')
               else
                 ...controller.sortedRecords.map(
-                  (record) => _RecordTile(record: record),
+                  (record) => _RecordTile(
+                    record: record,
+                    onEdit: () async {
+                      final saved = await showModalBottomSheet<bool>(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (context) => _RecordSheet(
+                          controller: controller,
+                          initialPlace: Place.fromJson(record.placeSnapshot),
+                          existingRecord: record,
+                        ),
+                      );
+                      if (saved == true && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('記録を更新しました。')),
+                        );
+                      }
+                    },
+                  ),
                 ),
             ],
           ),
@@ -1157,9 +1245,10 @@ class _RecordsTab extends StatelessWidget {
 }
 
 class _RecordTile extends StatelessWidget {
-  const _RecordTile({required this.record});
+  const _RecordTile({required this.record, required this.onEdit});
 
   final LunchChallengeRecord record;
+  final Future<void> Function() onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -1186,6 +1275,11 @@ class _RecordTile extends StatelessWidget {
                 ),
                 Text(
                   '${record.visitedAt.year}/${record.visitedAt.month}/${record.visitedAt.day}',
+                ),
+                IconButton(
+                  onPressed: onEdit,
+                  icon: const Icon(Icons.edit_outlined),
+                  tooltip: '編集して再保存',
                 ),
               ],
             ),
