@@ -38,4 +38,47 @@ void main() {
     expect(dineIn, greaterThan(takeout));
     expect(dineIn, 900);
   });
+
+  test('record copyWith can update score fields', () {
+    final record = LunchChallengeRecord(
+      id: '1',
+      baseLocationId: 'base',
+      placeId: 'place',
+      placeSnapshot: const {
+        'id': 'place',
+        'provider': 'manual',
+        'providerPlaceId': 'manual-1',
+        'name': 'Sample',
+        'lat': 35.0,
+        'lng': 139.0,
+        'address': '',
+        'buildingName': '',
+        'floorLabel': '10F',
+        'floorNumber': 10,
+        'category': '',
+        'rawPayload': '',
+      },
+      visitedAt: DateTime(2026, 4, 18),
+      timeLimitMinutes: 60,
+      dineType: DineType.dineIn,
+      menu: 'Lunch',
+      price: 1000,
+      paymentMethod: 'Card',
+      memo: '',
+      horizontalDistanceMeters: 500,
+      difficultyScore: 900,
+      scoreVersion: 1,
+    );
+
+    final updated = record.copyWith(
+      horizontalDistanceMeters: 650,
+      difficultyScore: 1050,
+      scoreVersion: 2,
+    );
+
+    expect(updated.horizontalDistanceMeters, 650);
+    expect(updated.difficultyScore, 1050);
+    expect(updated.scoreVersion, 2);
+    expect(updated.menu, 'Lunch');
+  });
 }

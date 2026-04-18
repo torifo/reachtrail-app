@@ -185,6 +185,51 @@ class ReachTrailController extends ChangeNotifier {
     notifyListeners();
   }
 
+  int get outdatedScoreCount =>
+      records.where((item) => item.scoreVersion != currentScoreVersion).length;
+
+  Future<int> recalculateScores() async {
+    final currentBase = baseLocation;
+    if (currentBase == null || records.isEmpty) {
+      return 0;
+    }
+
+    var updatedCount = 0;
+    final recalculated = records.map((record) {
+      final place = Place.fromJson(record.placeSnapshot);
+      final distance = calculateDistanceMeters(
+        startLat: currentBase.lat,
+        startLng: currentBase.lng,
+        endLat: place.lat,
+        endLng: place.lng,
+      );
+      final score = calculateDifficultyScore(
+        horizontalDistanceMeters: distance,
+        floorNumber: place.floorNumber,
+        dineType: record.dineType,
+      );
+
+      final changed =
+          record.horizontalDistanceMeters != distance ||
+          record.difficultyScore != score ||
+          record.scoreVersion != currentScoreVersion;
+      if (changed) {
+        updatedCount += 1;
+      }
+
+      return record.copyWith(
+        horizontalDistanceMeters: distance,
+        difficultyScore: score,
+        scoreVersion: currentScoreVersion,
+      );
+    }).toList();
+
+    records = recalculated;
+    await _persistence.saveRecords(records);
+    notifyListeners();
+    return updatedCount;
+  }
+
   Place _upsertPlace(Place place) {
     final index = places.indexWhere((item) => item.id == place.id);
     if (index >= 0) {
@@ -1052,6 +1097,36 @@ class _RecordsTab extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 16,
             children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '現行スコアバージョン: v$currentScoreVersion / 未更新: ${controller.outdatedScoreCount}件',
+                    ),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: controller.records.isEmpty
+                        ? null
+                        : () async {
+                            final count = await controller.recalculateScores();
+                            if (!context.mounted) {
+                              return;
+                            }
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  count == 0
+                                      ? '再計算の差分はありませんでした。'
+                                      : '$count 件のスコアを再計算しました。',
+                                ),
+                              ),
+                            );
+                          },
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('再計算'),
+                  ),
+                ],
+              ),
               Wrap(
                 spacing: 8,
                 children: RecordSort.values.map((sort) {

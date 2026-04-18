@@ -35,6 +35,42 @@ class LunchChallengeRecord {
   final double difficultyScore;
   final int scoreVersion;
 
+  LunchChallengeRecord copyWith({
+    String? id,
+    String? baseLocationId,
+    String? placeId,
+    Map<String, dynamic>? placeSnapshot,
+    DateTime? visitedAt,
+    int? timeLimitMinutes,
+    DineType? dineType,
+    String? menu,
+    int? price,
+    bool clearPrice = false,
+    String? paymentMethod,
+    String? memo,
+    double? horizontalDistanceMeters,
+    double? difficultyScore,
+    int? scoreVersion,
+  }) {
+    return LunchChallengeRecord(
+      id: id ?? this.id,
+      baseLocationId: baseLocationId ?? this.baseLocationId,
+      placeId: placeId ?? this.placeId,
+      placeSnapshot: placeSnapshot ?? this.placeSnapshot,
+      visitedAt: visitedAt ?? this.visitedAt,
+      timeLimitMinutes: timeLimitMinutes ?? this.timeLimitMinutes,
+      dineType: dineType ?? this.dineType,
+      menu: menu ?? this.menu,
+      price: clearPrice ? null : price ?? this.price,
+      paymentMethod: paymentMethod ?? this.paymentMethod,
+      memo: memo ?? this.memo,
+      horizontalDistanceMeters:
+          horizontalDistanceMeters ?? this.horizontalDistanceMeters,
+      difficultyScore: difficultyScore ?? this.difficultyScore,
+      scoreVersion: scoreVersion ?? this.scoreVersion,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
