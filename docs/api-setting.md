@@ -51,6 +51,22 @@ MVP要件を満たすには、少なくとも店舗検索用の外部APIが必�
 
 - `GOOGLE_PLACES_API_KEY=...`
 
+## Flutter実行時の指定例
+
+Mock検索:
+
+```bash
+flutter run --dart-define=PLACE_SEARCH_PROVIDER=mock
+```
+
+Yahoo検索:
+
+```bash
+flutter run \
+  --dart-define=PLACE_SEARCH_PROVIDER=yahoo \
+  --dart-define=YAHOO_API_KEY=YOUR_API_KEY
+```
+
 ## 実装前に確認すべきこと
 
 - Yahoo!ローカルサーチAPIで `buildingName` 相当がどこまで取れるか
