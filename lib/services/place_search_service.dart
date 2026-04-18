@@ -12,6 +12,7 @@ const double walkingSpeedKmh = 5.0;
 const double walkingSearchRadiusKm =
     walkingSpeedKmh * (walkingMinutesLimit / 60);
 const double walkingSearchRadiusMeters = walkingSearchRadiusKm * 1000;
+const double rankingDistanceTieThresholdMeters = 120;
 
 class SearchConfig {
   const SearchConfig({required this.provider, required this.yahooApiKey});
@@ -152,8 +153,11 @@ class MockPlaceSearchService implements PlaceSearchService {
           walkingSearchRadiusMeters;
     }).toList();
 
-    filtered.sort((a, b) => a.name.compareTo(b.name));
-    return filtered;
+    return rankPlaces(
+      places: filtered,
+      baseLocation: baseLocation,
+      deduplicate: false,
+    );
   }
 }
 
@@ -189,7 +193,7 @@ class YahooLocalSearchService implements PlaceSearchService {
       (item) => Map<String, dynamic>.from(item as Map),
     );
 
-    return features.map((item) {
+    final places = features.map((item) {
       final geometry = (item['Geometry'] as Map<String, dynamic>? ?? const {});
       final coordinates = (geometry['Coordinates'] as String? ?? '0,0').split(
         ',',
@@ -229,7 +233,110 @@ class YahooLocalSearchService implements PlaceSearchService {
         rawPayload: jsonEncode(item),
       );
     }).toList();
+
+    return rankPlaces(
+      places: places,
+      baseLocation: baseLocation,
+      deduplicate: true,
+    );
   }
+}
+
+List<Place> rankPlaces({
+  required List<Place> places,
+  required BaseLocation? baseLocation,
+  required bool deduplicate,
+}) {
+  final source = deduplicate ? deduplicatePlaces(places) : [...places];
+  source.sort((a, b) => comparePlaces(a, b, baseLocation));
+  return source;
+}
+
+List<Place> deduplicatePlaces(List<Place> places) {
+  final winners = <String, Place>{};
+
+  for (final place in places) {
+    final key = buildPlaceDedupKey(place);
+    final current = winners[key];
+    if (current == null ||
+        placeMetadataScore(place) > placeMetadataScore(current)) {
+      winners[key] = place;
+    }
+  }
+
+  return winners.values.toList();
+}
+
+String buildPlaceDedupKey(Place place) {
+  final normalizedName = normalizePlaceText(place.name);
+  final normalizedAddress = normalizePlaceText(place.address);
+  if (normalizedAddress.isNotEmpty) {
+    return '$normalizedName|$normalizedAddress';
+  }
+
+  return '$normalizedName|${place.lat.toStringAsFixed(4)}|${place.lng.toStringAsFixed(4)}';
+}
+
+String normalizePlaceText(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+}
+
+int comparePlaces(Place a, Place b, BaseLocation? baseLocation) {
+  final distanceComparison = compareDistance(a, b, baseLocation);
+  if (distanceComparison != 0) {
+    return distanceComparison;
+  }
+
+  final metadataComparison = placeMetadataScore(
+    b,
+  ).compareTo(placeMetadataScore(a));
+  if (metadataComparison != 0) {
+    return metadataComparison;
+  }
+
+  return a.name.compareTo(b.name);
+}
+
+int compareDistance(Place a, Place b, BaseLocation? baseLocation) {
+  if (baseLocation == null) {
+    return 0;
+  }
+
+  final aDistance = calculateDistanceMeters(
+    startLat: baseLocation.lat,
+    startLng: baseLocation.lng,
+    endLat: a.lat,
+    endLng: a.lng,
+  );
+  final bDistance = calculateDistanceMeters(
+    startLat: baseLocation.lat,
+    startLng: baseLocation.lng,
+    endLat: b.lat,
+    endLng: b.lng,
+  );
+
+  if ((aDistance - bDistance).abs() <= rankingDistanceTieThresholdMeters) {
+    return 0;
+  }
+
+  return aDistance.compareTo(bDistance);
+}
+
+int placeMetadataScore(Place place) {
+  var score = 0;
+  if (place.buildingName.trim().isNotEmpty) {
+    score += 2;
+  }
+  if (place.floorLabel.trim().isNotEmpty || place.floorNumber != null) {
+    score += 2;
+  }
+  if (place.category.trim().isNotEmpty) {
+    score += 1;
+  }
+  if (place.address.trim().isNotEmpty) {
+    score += 1;
+  }
+  return score;
 }
 
 extension on List<String> {
