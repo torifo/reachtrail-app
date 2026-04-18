@@ -571,6 +571,7 @@ class _RegisterTab extends StatefulWidget {
 class _RegisterTabState extends State<_RegisterTab> {
   final _searchController = TextEditingController();
   bool _nearbyOnly = true;
+  bool _showDebugInfo = false;
 
   @override
   void dispose() {
@@ -629,6 +630,17 @@ class _RegisterTabState extends State<_RegisterTab> {
                   ),
                 ],
               ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('検索デバッグ表示を有効にする'),
+                subtitle: const Text('Yahoo候補の要約とraw JSONを確認します。'),
+                value: _showDebugInfo,
+                onChanged: (value) {
+                  setState(() {
+                    _showDebugInfo = value ?? false;
+                  });
+                },
+              ),
               if (base == null)
                 const Text(
                   '先に基準地点を登録してください。',
@@ -655,6 +667,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                         (place) => _PlaceResultTile(
                           place: place,
                           baseLocation: controller.baseLocation,
+                          showDebugInfo: _showDebugInfo,
                           onUse: () => _openRecordSheet(context, place: place),
                         ),
                       )
@@ -694,11 +707,13 @@ class _PlaceResultTile extends StatelessWidget {
   const _PlaceResultTile({
     required this.place,
     required this.baseLocation,
+    required this.showDebugInfo,
     required this.onUse,
   });
 
   final Place place;
   final BaseLocation? baseLocation;
+  final bool showDebugInfo;
   final VoidCallback onUse;
 
   @override
@@ -738,11 +753,25 @@ class _PlaceResultTile extends StatelessWidget {
                   _Tag(label: '${distance.round()} m from base'),
               ],
             ),
+            if (showDebugInfo && place.provider == 'yahoo')
+              _YahooDebugSummary(place: place),
             Align(
               alignment: Alignment.centerRight,
-              child: FilledButton.tonal(
-                onPressed: onUse,
-                child: const Text('この候補で記録'),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (showDebugInfo && place.provider == 'yahoo')
+                    OutlinedButton.icon(
+                      onPressed: () => _openDebugSheet(context),
+                      icon: const Icon(Icons.bug_report_outlined),
+                      label: const Text('Debug'),
+                    ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: onUse,
+                    child: const Text('この候補で記録'),
+                  ),
+                ],
               ),
             ),
           ],
@@ -750,6 +779,158 @@ class _PlaceResultTile extends StatelessWidget {
       ),
     );
   }
+
+  void _openDebugSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _YahooDebugSheet(place: place),
+    );
+  }
+}
+
+class _YahooDebugSummary extends StatelessWidget {
+  const _YahooDebugSummary({required this.place});
+
+  final Place place;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = _buildYahooDebugSummary(place);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F1E3),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 6,
+          children: [
+            Text(
+              'Debug Summary',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            ...summary.entries.map(
+              (entry) => Text('${entry.key}: ${entry.value}'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _YahooDebugSheet extends StatelessWidget {
+  const _YahooDebugSheet({required this.place});
+
+  final Place place;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = _buildYahooDebugSummary(place);
+    final raw = _formatRawPayload(place.rawPayload);
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          spacing: 16,
+          children: [
+            Text(place.name, style: Theme.of(context).textTheme.headlineSmall),
+            Text('Yahoo candidate debug'),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7F1E3),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 8,
+                  children: summary.entries
+                      .map((entry) => Text('${entry.key}: ${entry.value}'))
+                      .toList(),
+                ),
+              ),
+            ),
+            SelectableText(
+              raw,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Map<String, String> _buildYahooDebugSummary(Place place) {
+  final parsed = _parseRawPayload(place.rawPayload);
+  final property = _mapOrEmpty(parsed['Property']);
+  final placeInfo = _mapOrEmpty(property['PlaceInfo']);
+  final building = _mapOrEmpty(property['Building']);
+  final geometry = _mapOrEmpty(parsed['Geometry']);
+  final genreNames = (_listOrEmpty(
+    property['Genre'],
+  )).map((item) => _mapOrEmpty(item)['Name']).whereType<String>().join(', ');
+
+  return {
+    'ProviderPlaceId': place.providerPlaceId,
+    'Name': place.name,
+    'Address': place.address,
+    'Genre': genreNames.isEmpty ? place.category : genreNames,
+    'Building.Name': '${building['Name'] ?? ''}',
+    'PlaceInfo.FloorName': '${placeInfo['FloorName'] ?? ''}',
+    'Building.Floor': '${building['Floor'] ?? ''}',
+    'Coordinates': '${geometry['Coordinates'] ?? ''}',
+  };
+}
+
+Map<String, dynamic> _parseRawPayload(String rawPayload) {
+  if (rawPayload.trim().isEmpty) {
+    return const {};
+  }
+
+  try {
+    return Map<String, dynamic>.from(jsonDecode(rawPayload) as Map);
+  } catch (_) {
+    return const {};
+  }
+}
+
+Map<String, dynamic> _mapOrEmpty(Object? value) {
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  return const {};
+}
+
+List<dynamic> _listOrEmpty(Object? value) {
+  if (value is List) {
+    return value;
+  }
+  return const [];
+}
+
+String _formatRawPayload(String rawPayload) {
+  final parsed = _parseRawPayload(rawPayload);
+  if (parsed.isEmpty) {
+    return rawPayload.isEmpty ? 'No raw payload' : rawPayload;
+  }
+  const encoder = JsonEncoder.withIndent('  ');
+  return encoder.convert(parsed);
 }
 
 class _RecordSheet extends StatefulWidget {
