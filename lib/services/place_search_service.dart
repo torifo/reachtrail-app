@@ -7,6 +7,12 @@ import '../models/place.dart';
 import '../utils/distance_calculator.dart';
 import '../utils/floor_parser.dart';
 
+const double walkingMinutesLimit = 60;
+const double walkingSpeedKmh = 5.0;
+const double walkingSearchRadiusKm =
+    walkingSpeedKmh * (walkingMinutesLimit / 60);
+const double walkingSearchRadiusMeters = walkingSearchRadiusKm * 1000;
+
 class SearchConfig {
   const SearchConfig({required this.provider, required this.yahooApiKey});
 
@@ -143,7 +149,7 @@ class MockPlaceSearchService implements PlaceSearchService {
             endLat: place.lat,
             endLng: place.lng,
           ) <=
-          1200;
+          walkingSearchRadiusMeters;
     }).toList();
 
     filtered.sort((a, b) => a.name.compareTo(b.name));
@@ -171,7 +177,7 @@ class YahooLocalSearchService implements PlaceSearchService {
       if (baseLocation != null) 'sort': 'geo',
       if (baseLocation != null) 'lat': '${baseLocation.lat}',
       if (baseLocation != null) 'lon': '${baseLocation.lng}',
-      if (nearbyOnly) 'dist': '1.2',
+      if (nearbyOnly) 'dist': '$walkingSearchRadiusKm',
     });
     final response = await http.get(uri);
     if (response.statusCode != 200) {

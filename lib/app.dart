@@ -601,7 +601,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                 onSubmitted: (_) => _runSearch(),
               ),
               SwitchListTile(
-                title: const Text('基準地点の近傍だけを表示'),
+                title: const Text('基準地点から片道徒歩1時間圏内で絞り込む'),
                 value: _nearbyOnly,
                 onChanged: base == null
                     ? null
@@ -645,7 +645,7 @@ class _RegisterTabState extends State<_RegisterTab> {
         const SizedBox(height: 16),
         _SectionCard(
           title: 'Candidates',
-          subtitle: '建物名と階数ラベルを確認し、必要なら補正してから記録します。',
+          subtitle: '基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
           child: controller.searchResults.isEmpty
               ? const Text('検索結果はまだありません。')
               : Column(

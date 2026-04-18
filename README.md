@@ -17,8 +17,9 @@ ReachTrail は、基準地点からランチ先までの距離と難易度を記
 - UI: Flutter
 - 保存: `shared_preferences`
 - 検索: `PLACE_SEARCH_PROVIDER` に応じて切替
-  - `mock`: 同梱サンプルデータを検索
-  - `yahoo`: Yahooローカル検索APIを使用し、失敗時は `mock` にフォールバック
+- `mock`: 同梱サンプルデータを検索
+- `yahoo`: Yahooローカル検索APIを使用し、失敗時は `mock` にフォールバック
+- 基準地点からの近傍検索は「片道徒歩1時間」を円形半径に換算して絞り込み
 
 ## 設定ファイル
 
@@ -69,6 +70,7 @@ flutter run \
 ## 補足
 
 - Yahoo API は公式レスポンスの `Property.PlaceInfo.FloorName`、`Property.Building.Name`、`Property.Building.Floor`、`Property.Genre[].Name` を優先して解釈します。
+- 近傍検索の円半径は、徒歩速度 `5.0 km/h` と片道 `60分` を前提に `5km` で計算しています。
 - Yahoo API から建物名や階数が安定取得できない場合でも、手入力で記録を完結できます。
 - 保存済み記録は履歴画面から編集して再保存できます。
 - 難易度スコアは `scoreVersion` 付きで保存しており、将来の再計算に備えています。
