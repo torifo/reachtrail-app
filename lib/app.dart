@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart' as latlong;
 
 import 'models/base_location.dart';
 import 'models/lunch_challenge_record.dart';
@@ -570,8 +572,10 @@ class _RegisterTab extends StatefulWidget {
 
 class _RegisterTabState extends State<_RegisterTab> {
   final _searchController = TextEditingController();
+  final _mapController = MapController();
   bool _nearbyOnly = true;
   bool _showDebugInfo = false;
+  String? _selectedPlaceId;
 
   @override
   void dispose() {
@@ -668,12 +672,31 @@ class _RegisterTabState extends State<_RegisterTab> {
                           place: place,
                           baseLocation: controller.baseLocation,
                           showDebugInfo: _showDebugInfo,
+                          isSelected: _selectedPlaceId == place.id,
+                          onSelect: () => _selectPlace(place),
                           onUse: () => _openRecordSheet(context, place: place),
                         ),
                       )
                       .toList(),
                 ),
         ),
+        if (controller.searchResults.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _SectionCard(
+            title: 'Candidate Map',
+            subtitle: 'Google有料サービスは使わず、OpenStreetMapで基準地点と候補位置を見比べます。',
+            child: SizedBox(
+              height: 320,
+              child: _CandidateMap(
+                mapController: _mapController,
+                baseLocation: base,
+                places: controller.searchResults,
+                selectedPlaceId: _selectedPlaceId,
+                onSelectPlace: _selectPlace,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -686,6 +709,13 @@ class _RegisterTabState extends State<_RegisterTab> {
       _searchController.text.trim(),
       nearbyOnly: _nearbyOnly,
     );
+    if (!mounted) {
+      return;
+    }
+    final results = widget.controller.searchResults;
+    if (results.isNotEmpty) {
+      _selectPlace(results.first, moveMap: true);
+    }
   }
 
   Future<void> _openRecordSheet(BuildContext context, {Place? place}) async {
@@ -701,6 +731,15 @@ class _RegisterTabState extends State<_RegisterTab> {
       ).showSnackBar(const SnackBar(content: Text('ランチ記録を保存しました。')));
     }
   }
+
+  void _selectPlace(Place place, {bool moveMap = true}) {
+    setState(() {
+      _selectedPlaceId = place.id;
+    });
+    if (moveMap) {
+      _mapController.move(latlong.LatLng(place.lat, place.lng), 16);
+    }
+  }
 }
 
 class _PlaceResultTile extends StatelessWidget {
@@ -708,12 +747,16 @@ class _PlaceResultTile extends StatelessWidget {
     required this.place,
     required this.baseLocation,
     required this.showDebugInfo,
+    required this.isSelected,
+    required this.onSelect,
     required this.onUse,
   });
 
   final Place place;
   final BaseLocation? baseLocation;
   final bool showDebugInfo;
+  final bool isSelected;
+  final VoidCallback onSelect;
   final VoidCallback onUse;
 
   @override
@@ -726,55 +769,75 @@ class _PlaceResultTile extends StatelessWidget {
             endLat: place.lat,
             endLng: place.lng,
           );
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFDED7CC)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          spacing: 8,
-          children: [
-            Text(place.name, style: Theme.of(context).textTheme.titleMedium),
-            Text(place.address),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _Tag(label: place.provider.toUpperCase()),
-                if (place.buildingName.isNotEmpty)
-                  _Tag(label: place.buildingName),
-                if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
-                if (place.category.isNotEmpty) _Tag(label: place.category),
-                if (distance != null)
-                  _Tag(label: '${distance.round()} m from base'),
-              ],
-            ),
-            if (showDebugInfo && place.provider == 'yahoo')
-              _YahooDebugSummary(place: place),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+    return InkWell(
+      onTap: onSelect,
+      borderRadius: BorderRadius.circular(18),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE6F6F3) : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected
+                ? const Color(0xFF0D9488)
+                : const Color(0xFFDED7CC),
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 8,
+            children: [
+              Row(
                 children: [
-                  if (showDebugInfo && place.provider == 'yahoo')
-                    OutlinedButton.icon(
-                      onPressed: () => _openDebugSheet(context),
-                      icon: const Icon(Icons.bug_report_outlined),
-                      label: const Text('Debug'),
+                  Expanded(
+                    child: Text(
+                      place.name,
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
-                  const SizedBox(width: 8),
-                  FilledButton.tonal(
-                    onPressed: onUse,
-                    child: const Text('この候補で記録'),
                   ),
+                  if (isSelected) const Icon(Icons.near_me, size: 18),
                 ],
               ),
-            ),
-          ],
+              Text(place.address),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Tag(label: place.provider.toUpperCase()),
+                  if (place.buildingName.isNotEmpty)
+                    _Tag(label: place.buildingName),
+                  if (place.floorLabel.isNotEmpty)
+                    _Tag(label: place.floorLabel),
+                  if (place.category.isNotEmpty) _Tag(label: place.category),
+                  if (distance != null)
+                    _Tag(label: '${distance.round()} m from base'),
+                ],
+              ),
+              if (showDebugInfo && place.provider == 'yahoo')
+                _YahooDebugSummary(place: place),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (showDebugInfo && place.provider == 'yahoo')
+                      OutlinedButton.icon(
+                        onPressed: () => _openDebugSheet(context),
+                        icon: const Icon(Icons.bug_report_outlined),
+                        label: const Text('Debug'),
+                      ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: onUse,
+                      child: const Text('この候補で記録'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -785,6 +848,127 @@ class _PlaceResultTile extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       builder: (context) => _YahooDebugSheet(place: place),
+    );
+  }
+}
+
+class _CandidateMap extends StatelessWidget {
+  const _CandidateMap({
+    required this.mapController,
+    required this.baseLocation,
+    required this.places,
+    required this.selectedPlaceId,
+    required this.onSelectPlace,
+  });
+
+  final MapController mapController;
+  final BaseLocation? baseLocation;
+  final List<Place> places;
+  final String? selectedPlaceId;
+  final ValueChanged<Place> onSelectPlace;
+
+  @override
+  Widget build(BuildContext context) {
+    final centerPlace = places.firstWhere(
+      (place) => place.id == selectedPlaceId,
+      orElse: () => places.first,
+    );
+    final center = latlong.LatLng(
+      baseLocation?.lat ?? centerPlace.lat,
+      baseLocation?.lng ?? centerPlace.lng,
+    );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: FlutterMap(
+        mapController: mapController,
+        options: MapOptions(
+          initialCenter: center,
+          initialZoom: 15.5,
+          onTap: (_, point) {},
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'reachtrail_app',
+          ),
+          MarkerLayer(
+            markers: [
+              if (baseLocation != null)
+                Marker(
+                  point: latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
+                  width: 120,
+                  height: 56,
+                  child: const _MapMarker(
+                    label: 'Base',
+                    color: Color(0xFF1D4ED8),
+                    isSelected: false,
+                  ),
+                ),
+              ...places.map(
+                (place) => Marker(
+                  point: latlong.LatLng(place.lat, place.lng),
+                  width: 140,
+                  height: 64,
+                  child: GestureDetector(
+                    onTap: () => onSelectPlace(place),
+                    child: _MapMarker(
+                      label: place.name,
+                      color: const Color(0xFF0D9488),
+                      isSelected: selectedPlaceId == place.id,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapMarker extends StatelessWidget {
+  const _MapMarker({
+    required this.label,
+    required this.color,
+    required this.isSelected,
+  });
+
+  final String label;
+  final Color color;
+  final bool isSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected ? color : color.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: const [
+              BoxShadow(
+                blurRadius: 12,
+                offset: Offset(0, 6),
+                color: Color(0x22000000),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Icon(Icons.location_on, color: color, size: isSelected ? 30 : 24),
+      ],
     );
   }
 }
