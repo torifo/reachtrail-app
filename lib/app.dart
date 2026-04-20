@@ -118,6 +118,7 @@ class ReachTrailController extends ChangeNotifier {
     required String name,
     required double lat,
     required double lng,
+    required String floorLabel,
     required String memo,
   }) async {
     final location = BaseLocation(
@@ -125,6 +126,7 @@ class ReachTrailController extends ChangeNotifier {
       name: name,
       lat: lat,
       lng: lng,
+      floorLabel: floorLabel,
       memo: memo,
     );
     await _persistence.saveBaseLocation(location);
@@ -335,6 +337,22 @@ class ReachTrailController extends ChangeNotifier {
     return sortedRecordsFor(RecordSort.difficulty).first;
   }
 
+  ({String placeName, int count})? get mostVisitedPlace {
+    if (records.isEmpty) {
+      return null;
+    }
+    final counts = <String, int>{};
+    final names = <String, String>{};
+    for (final record in records) {
+      counts[record.placeId] = (counts[record.placeId] ?? 0) + 1;
+      names[record.placeId] ??= Place.fromJson(record.placeSnapshot).name;
+    }
+    final topId = counts.entries
+        .reduce((a, b) => a.value >= b.value ? a : b)
+        .key;
+    return (placeName: names[topId]!, count: counts[topId]!);
+  }
+
   List<LunchChallengeRecord> sortedRecordsFor(RecordSort sort) {
     final previous = recordSort;
     recordSort = sort;
@@ -430,6 +448,7 @@ class _BaseLocationTab extends StatefulWidget {
 class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _searchController;
   late final TextEditingController _nameController;
+  late final TextEditingController _floorController;
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
   Place? _selectedCandidate;
@@ -442,6 +461,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     final base = widget.controller.baseLocation;
     _searchController = TextEditingController();
     _nameController = TextEditingController(text: base?.name ?? 'Office');
+    _floorController = TextEditingController(text: base?.floorLabel ?? '');
     _memoController = TextEditingController(text: base?.memo ?? '');
     _selectedLat = base?.lat;
     _selectedLng = base?.lng;
@@ -451,6 +471,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   void dispose() {
     _searchController.dispose();
     _nameController.dispose();
+    _floorController.dispose();
     _memoController.dispose();
     super.dispose();
   }
@@ -515,6 +536,14 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
                 ),
                 TextFormField(
+                  controller: _floorController,
+                  decoration: const InputDecoration(
+                    labelText: '階数（任意）',
+                    hintText: '例: 22F, B1, 3F',
+                    prefixIcon: Icon(Icons.layers_outlined),
+                  ),
+                ),
+                TextFormField(
                   controller: _memoController,
                   decoration: const InputDecoration(labelText: 'メモ'),
                   maxLines: 2,
@@ -543,6 +572,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                         name: _nameController.text.trim(),
                         lat: _selectedLat!,
                         lng: _selectedLng!,
+                        floorLabel: _floorController.text.trim(),
                         memo: _memoController.text.trim(),
                       );
                       if (!context.mounted) {
@@ -587,7 +617,11 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                 label: '現在の基準地点',
                 value: base == null
                     ? '未設定'
-                    : '${base.name} (${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)})',
+                    : [
+                        base.name,
+                        if (base.floorLabel.isNotEmpty) base.floorLabel,
+                        '(${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)})',
+                      ].join(' '),
               ),
               Align(
                 alignment: Alignment.centerRight,
@@ -634,6 +668,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _nameController.text = place.buildingName.isNotEmpty
           ? place.buildingName
           : place.name;
+      _floorController.text = '';
       _memoController.text = place.address;
     });
   }
@@ -2148,6 +2183,10 @@ class _RecordsTab extends StatelessWidget {
                 metricBuilder: (record) =>
                     record.difficultyScore.toStringAsFixed(0),
               ),
+              _BestPlaceTile(
+                label: 'Most visited',
+                entry: controller.mostVisitedPlace,
+              ),
             ],
           ),
         ),
@@ -2335,6 +2374,38 @@ class _BestRecordTile extends StatelessWidget {
                     ),
             ),
             if (record != null) Text(metricBuilder(record!)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BestPlaceTile extends StatelessWidget {
+  const _BestPlaceTile({required this.label, required this.entry});
+
+  final String label;
+  final ({String placeName, int count})? entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFE6F6F3),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.workspace_premium),
+            const SizedBox(width: 12),
+            Expanded(
+              child: entry == null
+                  ? Text('$label: まだ記録なし')
+                  : Text('$label: ${entry!.placeName}'),
+            ),
+            if (entry != null) Text('${entry!.count} 回'),
           ],
         ),
       ),

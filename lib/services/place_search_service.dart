@@ -7,7 +7,7 @@ import '../models/place.dart';
 import '../utils/distance_calculator.dart';
 import '../utils/floor_parser.dart';
 
-const double walkingMinutesLimit = 60;
+const double walkingMinutesLimit = 45;
 const double walkingSpeedKmh = 5.0;
 const double walkingSearchRadiusKm =
     walkingSpeedKmh * (walkingMinutesLimit / 60);
@@ -392,10 +392,10 @@ List<Place> collapseBaseLocationCandidates(List<Place> ranked) {
 
 String buildBaseLocationGroupKey(Place place) {
   final normalizedBuilding = normalizePlaceText(place.buildingName);
-  final normalizedAddress = normalizePlaceText(place.address);
   if (normalizedBuilding.isNotEmpty) {
-    return '$normalizedBuilding|$normalizedAddress';
+    return normalizedBuilding;
   }
+  final normalizedAddress = normalizePlaceText(place.address);
   return '${normalizePlaceText(place.name)}|$normalizedAddress';
 }
 
