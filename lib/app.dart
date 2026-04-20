@@ -76,13 +76,16 @@ class ReachTrailController extends ChangeNotifier {
 
   bool isBootstrapping = true;
   bool isSearching = false;
+  bool isBaseSearching = false;
   String? errorMessage;
+  String? baseSearchError;
   String placeSearchProvider = 'mock';
   String yahooApiKey = '';
   BaseLocation? baseLocation;
   List<Place> places = const [];
   List<LunchChallengeRecord> records = const [];
   List<Place> searchResults = const [];
+  List<Place> baseSearchResults = const [];
   RecordSort recordSort = RecordSort.latest;
 
   Future<void> load() async {
@@ -147,6 +150,28 @@ class ReachTrailController extends ChangeNotifier {
       searchResults = const [];
     } finally {
       isSearching = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> searchBaseLocations(String query) async {
+    isBaseSearching = true;
+    baseSearchError = null;
+    notifyListeners();
+    try {
+      baseSearchResults = await _searchService!.search(
+        query: query,
+        baseLocation: null,
+        nearbyOnly: false,
+      );
+      if (baseSearchResults.isEmpty) {
+        baseSearchError = '基準地点候補が見つかりません。別の建物名や住所で試してください。';
+      }
+    } catch (error) {
+      baseSearchError = '基準地点検索に失敗しました: $error';
+      baseSearchResults = const [];
+    } finally {
+      isBaseSearching = false;
       notifyListeners();
     }
   }
@@ -402,27 +427,29 @@ class _BaseLocationTab extends StatefulWidget {
 }
 
 class _BaseLocationTabState extends State<_BaseLocationTab> {
+  late final TextEditingController _searchController;
   late final TextEditingController _nameController;
-  late final TextEditingController _latController;
-  late final TextEditingController _lngController;
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
+  Place? _selectedCandidate;
+  double? _selectedLat;
+  double? _selectedLng;
 
   @override
   void initState() {
     super.initState();
     final base = widget.controller.baseLocation;
+    _searchController = TextEditingController();
     _nameController = TextEditingController(text: base?.name ?? 'Office');
-    _latController = TextEditingController(text: base?.lat.toString() ?? '');
-    _lngController = TextEditingController(text: base?.lng.toString() ?? '');
     _memoController = TextEditingController(text: base?.memo ?? '');
+    _selectedLat = base?.lat;
+    _selectedLng = base?.lng;
   }
 
   @override
   void dispose() {
+    _searchController.dispose();
     _nameController.dispose();
-    _latController.dispose();
-    _lngController.dispose();
     _memoController.dispose();
     super.dispose();
   }
@@ -436,12 +463,50 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       children: [
         _SectionCard(
           title: 'Base Location',
-          subtitle: '単一拠点のMVP。後から複数拠点へ拡張しやすい形で保持します。',
+          subtitle: 'Yahoo検索ベースで基準地点候補を探し、選んだ地点を拠点として保存します。',
           child: Form(
             key: _formKey,
             child: Column(
               spacing: 16,
               children: [
+                TextField(
+                  controller: _searchController,
+                  decoration: const InputDecoration(
+                    labelText: '建物名 / オフィス名 / 住所',
+                    prefixIcon: Icon(Icons.apartment),
+                  ),
+                  onSubmitted: (_) => _runBaseSearch(),
+                ),
+                FilledButton.icon(
+                  onPressed: controller.isBaseSearching ? null : _runBaseSearch,
+                  icon: controller.isBaseSearching
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.search),
+                  label: const Text('基準地点を検索'),
+                ),
+                if (controller.baseSearchError != null)
+                  Text(
+                    controller.baseSearchError!,
+                    style: const TextStyle(color: Colors.redAccent),
+                  ),
+                if (controller.baseSearchResults.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '候補から基準地点を選択',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                ...controller.baseSearchResults.map(
+                  (place) => _BaseCandidateTile(
+                    place: place,
+                    isSelected: _selectedCandidate?.id == place.id,
+                    onSelect: () => _selectBaseCandidate(place),
+                  ),
+                ),
                 TextFormField(
                   controller: _nameController,
                   decoration: const InputDecoration(labelText: '拠点名'),
@@ -449,28 +514,17 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
                 ),
                 TextFormField(
-                  controller: _latController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    signed: true,
-                    decimal: true,
-                  ),
-                  decoration: const InputDecoration(labelText: '緯度'),
-                  validator: _validateDouble,
-                ),
-                TextFormField(
-                  controller: _lngController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    signed: true,
-                    decimal: true,
-                  ),
-                  decoration: const InputDecoration(labelText: '経度'),
-                  validator: _validateDouble,
-                ),
-                TextFormField(
                   controller: _memoController,
                   decoration: const InputDecoration(labelText: 'メモ'),
                   maxLines: 2,
                 ),
+                if (_selectedLat != null && _selectedLng != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '選択座標: ${_selectedLat!.toStringAsFixed(6)}, ${_selectedLng!.toStringAsFixed(6)}',
+                    ),
+                  ),
                 Align(
                   alignment: Alignment.centerRight,
                   child: FilledButton(
@@ -478,10 +532,16 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       if (!_formKey.currentState!.validate()) {
                         return;
                       }
+                      if (_selectedLat == null || _selectedLng == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('先に基準地点候補を選んでください。')),
+                        );
+                        return;
+                      }
                       await controller.saveBaseLocation(
                         name: _nameController.text.trim(),
-                        lat: double.parse(_latController.text.trim()),
-                        lng: double.parse(_lngController.text.trim()),
+                        lat: _selectedLat!,
+                        lng: _selectedLng!,
                         memo: _memoController.text.trim(),
                       );
                       if (!context.mounted) {
@@ -551,14 +611,95 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     );
   }
 
-  String? _validateDouble(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return '必須です';
+  Future<void> _runBaseSearch() async {
+    if (_searchController.text.trim().isEmpty) {
+      return;
     }
-    if (double.tryParse(value.trim()) == null) {
-      return '数値で入力してください';
+    await widget.controller.searchBaseLocations(_searchController.text.trim());
+    if (!mounted) {
+      return;
     }
-    return null;
+    final first = widget.controller.baseSearchResults.firstOrNull;
+    if (first != null) {
+      _selectBaseCandidate(first);
+    }
+  }
+
+  void _selectBaseCandidate(Place place) {
+    setState(() {
+      _selectedCandidate = place;
+      _selectedLat = place.lat;
+      _selectedLng = place.lng;
+      _nameController.text = place.buildingName.isNotEmpty
+          ? place.buildingName
+          : place.name;
+      _memoController.text = place.address;
+    });
+  }
+}
+
+class _BaseCandidateTile extends StatelessWidget {
+  const _BaseCandidateTile({
+    required this.place,
+    required this.isSelected,
+    required this.onSelect,
+  });
+
+  final Place place;
+  final bool isSelected;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onSelect,
+      borderRadius: BorderRadius.circular(16),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE6F6F3) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected
+                ? const Color(0xFF0D9488)
+                : const Color(0xFFDED7CC),
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 8,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      place.buildingName.isNotEmpty
+                          ? place.buildingName
+                          : place.name,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  if (isSelected) const Icon(Icons.check_circle, size: 18),
+                ],
+              ),
+              Text(place.address),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Tag(label: place.provider.toUpperCase()),
+                  if (place.floorLabel.isNotEmpty)
+                    _Tag(label: place.floorLabel),
+                  if (place.category.isNotEmpty) _Tag(label: place.category),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
