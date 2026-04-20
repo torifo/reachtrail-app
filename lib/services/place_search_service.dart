@@ -182,6 +182,36 @@ class YahooLocalSearchService implements PlaceSearchService {
     required bool nearbyOnly,
     SearchPurpose purpose = SearchPurpose.lunchPlace,
   }) async {
+    final allPlaces = <Place>[];
+    for (final variant in _queryVariants(query, purpose)) {
+      final places = await _searchSingleQuery(
+        query: variant,
+        baseLocation: baseLocation,
+        nearbyOnly: nearbyOnly,
+      );
+      allPlaces.addAll(places);
+    }
+
+    var ranked = rankPlaces(
+      places: allPlaces,
+      baseLocation: baseLocation,
+      deduplicate: true,
+      purpose: purpose,
+      query: query,
+    );
+
+    if (purpose == SearchPurpose.baseLocation) {
+      ranked = _prependInferredBaseCandidate(query, ranked);
+    }
+
+    return ranked;
+  }
+
+  Future<List<Place>> _searchSingleQuery({
+    required String query,
+    required BaseLocation? baseLocation,
+    required bool nearbyOnly,
+  }) async {
     final uri = Uri.https('map.yahooapis.jp', '/search/local/V1/localSearch', {
       'appid': _apiKey,
       'query': query,
@@ -203,7 +233,7 @@ class YahooLocalSearchService implements PlaceSearchService {
       (item) => Map<String, dynamic>.from(item as Map),
     );
 
-    final places = features.map((item) {
+    return features.map((item) {
       final geometry = (item['Geometry'] as Map<String, dynamic>? ?? const {});
       final coordinates = (geometry['Coordinates'] as String? ?? '0,0').split(
         ',',
@@ -243,15 +273,79 @@ class YahooLocalSearchService implements PlaceSearchService {
         rawPayload: jsonEncode(item),
       );
     }).toList();
-
-    return rankPlaces(
-      places: places,
-      baseLocation: baseLocation,
-      deduplicate: true,
-      purpose: purpose,
-      query: query,
-    );
   }
+}
+
+List<String> _queryVariants(String query, SearchPurpose purpose) {
+  final variants = <String>[query.trim()];
+  if (purpose != SearchPurpose.baseLocation) {
+    return variants;
+  }
+
+  final normalized = query
+      .replaceFirst(RegExp(r'^住友不動産'), '')
+      .replaceFirst(RegExp(r'^住友不動産株式会社'), '')
+      .trim();
+  if (normalized.isNotEmpty && !variants.contains(normalized)) {
+    variants.add(normalized);
+  }
+
+  final compact = normalized.replaceAll(RegExp(r'\s+'), '');
+  if (compact.isNotEmpty && !variants.contains(compact)) {
+    variants.add(compact);
+  }
+
+  return variants;
+}
+
+List<Place> _prependInferredBaseCandidate(String query, List<Place> ranked) {
+  if (ranked.isEmpty) {
+    return ranked;
+  }
+
+  final normalizedQuery = normalizePlaceText(query);
+  final hasDirectBuildingHit = ranked.any((place) {
+    final name = normalizePlaceText(place.name);
+    final building = normalizePlaceText(place.buildingName);
+    return name == normalizedQuery ||
+        building == normalizedQuery ||
+        name.contains(normalizedQuery) ||
+        building.contains(normalizedQuery);
+  });
+  if (hasDirectBuildingHit) {
+    return ranked;
+  }
+
+  final first = ranked.first;
+  final sameAddressCount = ranked
+      .where(
+        (place) =>
+            normalizePlaceText(place.address) ==
+            normalizePlaceText(first.address),
+      )
+      .length;
+  if (sameAddressCount < 2) {
+    return ranked;
+  }
+
+  final inferred = Place(
+    id: 'yahoo-inferred-$normalizedQuery',
+    provider: 'yahoo',
+    providerPlaceId: 'inferred-$normalizedQuery',
+    name: query,
+    lat: first.lat,
+    lng: first.lng,
+    address: first.address,
+    buildingName: query.replaceFirst(RegExp(r'^住友不動産'), '').trim(),
+    category: 'BaseLocation',
+    rawPayload: jsonEncode({
+      'source': 'inferred_base_location',
+      'query': query,
+      'basedOn': ranked.take(3).map((place) => place.toJson()).toList(),
+    }),
+  );
+
+  return [inferred, ...ranked];
 }
 
 List<Place> rankPlaces({
