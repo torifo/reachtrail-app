@@ -241,8 +241,7 @@ class YahooLocalSearchService implements PlaceSearchService {
       final property = (item['Property'] as Map<String, dynamic>? ?? const {});
       final placeInfo =
           (property['PlaceInfo'] as Map<String, dynamic>? ?? const {});
-      final building =
-          (property['Building'] as Map<String, dynamic>? ?? const {});
+      final building = _firstMap(property['Building']);
       final genres = (property['Genre'] as List<dynamic>? ?? const []).map(
         (item) => Map<String, dynamic>.from(item as Map),
       );
@@ -509,4 +508,14 @@ extension on List<String> {
     }
     return this[index];
   }
+}
+
+Map<String, dynamic> _firstMap(Object? value) {
+  if (value is List && value.isNotEmpty && value.first is Map) {
+    return Map<String, dynamic>.from(value.first as Map);
+  }
+  if (value is Map) {
+    return Map<String, dynamic>.from(value);
+  }
+  return const {};
 }
