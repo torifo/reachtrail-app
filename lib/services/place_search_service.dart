@@ -202,6 +202,7 @@ class YahooLocalSearchService implements PlaceSearchService {
 
     if (purpose == SearchPurpose.baseLocation) {
       ranked = _prependInferredBaseCandidate(query, ranked);
+      ranked = collapseBaseLocationCandidates(ranked);
     }
 
     return ranked;
@@ -345,6 +346,72 @@ List<Place> _prependInferredBaseCandidate(String query, List<Place> ranked) {
   );
 
   return [inferred, ...ranked];
+}
+
+List<Place> collapseBaseLocationCandidates(List<Place> ranked) {
+  final grouped = <String, List<Place>>{};
+
+  for (final place in ranked) {
+    final key = buildBaseLocationGroupKey(place);
+    grouped.putIfAbsent(key, () => []).add(place);
+  }
+
+  return grouped.entries.map((entry) {
+    final places = entry.value;
+    final primary = places.first;
+    final buildingName = _resolveBuildingName(primary, places);
+    final sampleNames = places
+        .map((place) => place.name)
+        .where(
+          (name) =>
+              normalizePlaceText(name) != normalizePlaceText(buildingName),
+        )
+        .take(3)
+        .toList();
+
+    return Place(
+      id: 'base-${entry.key}',
+      provider: primary.provider,
+      providerPlaceId: 'base-${entry.key}',
+      name: buildingName,
+      lat: primary.lat,
+      lng: primary.lng,
+      address: primary.address,
+      buildingName: buildingName,
+      category: 'BaseLocation',
+      rawPayload: jsonEncode({
+        'source': 'base_location_group',
+        'buildingName': buildingName,
+        'candidateCount': places.length,
+        'sampleNames': sampleNames,
+        'members': places.map((place) => place.toJson()).toList(),
+      }),
+    );
+  }).toList();
+}
+
+String buildBaseLocationGroupKey(Place place) {
+  final normalizedBuilding = normalizePlaceText(place.buildingName);
+  final normalizedAddress = normalizePlaceText(place.address);
+  if (normalizedBuilding.isNotEmpty) {
+    return '$normalizedBuilding|$normalizedAddress';
+  }
+  return '${normalizePlaceText(place.name)}|$normalizedAddress';
+}
+
+String _resolveBuildingName(Place primary, List<Place> places) {
+  if (primary.buildingName.trim().isNotEmpty) {
+    return primary.buildingName;
+  }
+
+  final buildingCandidate = places
+      .map((place) => place.buildingName.trim())
+      .firstWhere((name) => name.isNotEmpty, orElse: () => '');
+  if (buildingCandidate.isNotEmpty) {
+    return buildingCandidate;
+  }
+
+  return primary.name;
 }
 
 List<Place> rankPlaces({

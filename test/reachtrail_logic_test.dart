@@ -195,4 +195,36 @@ void main() {
 
     expect(ranked.first.id, 'rich');
   });
+
+  test('base location candidates collapse tenants into one building', () {
+    final places = [
+      Place(
+        id: '1',
+        provider: 'yahoo',
+        providerPlaceId: 'a',
+        name: 'タリーズコーヒー 新宿オークタワー店',
+        lat: 35.6937,
+        lng: 139.6907,
+        address: '東京都新宿区西新宿6-8-1',
+        buildingName: '住友不動産新宿オークタワー',
+      ),
+      Place(
+        id: '2',
+        provider: 'yahoo',
+        providerPlaceId: 'b',
+        name: '割烹 田一',
+        lat: 35.6938,
+        lng: 139.6907,
+        address: '東京都新宿区西新宿6-8-1',
+        buildingName: '住友不動産新宿オークタワー',
+      ),
+    ];
+
+    final collapsed = collapseBaseLocationCandidates(places);
+
+    expect(collapsed, hasLength(1));
+    expect(collapsed.first.name, '住友不動産新宿オークタワー');
+    expect(collapsed.first.buildingName, '住友不動産新宿オークタワー');
+    expect(collapsed.first.category, 'BaseLocation');
+  });
 }
