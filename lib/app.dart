@@ -951,6 +951,13 @@ class _CandidateRadar extends StatelessWidget {
                   );
                   final center = Offset(size / 2, size / 2);
                   final radarRadius = size / 2;
+                  final nodes = _buildRadarNodes(
+                    baseLocation: baseLocation!,
+                    places: places,
+                    selectedPlaceId: selectedPlaceId,
+                    center: center,
+                    radarRadius: radarRadius,
+                  );
 
                   return Center(
                     child: SizedBox(
@@ -963,35 +970,19 @@ class _CandidateRadar extends StatelessWidget {
                             size: Size.square(size),
                             painter: _RadarPainter(),
                           ),
-                          ...places.map((place) {
-                            final distance = calculateDistanceMeters(
-                              startLat: baseLocation!.lat,
-                              startLng: baseLocation!.lng,
-                              endLat: place.lat,
-                              endLng: place.lng,
-                            );
-                            final bearing = _calculateBearingDegrees(
-                              startLat: baseLocation!.lat,
-                              startLng: baseLocation!.lng,
-                              endLat: place.lat,
-                              endLng: place.lng,
-                            );
-                            final point = _radarPoint(
-                              center: center,
-                              radius: radarRadius,
-                              distanceMeters: distance,
-                              bearingDegrees: bearing,
-                            );
-
+                          ...nodes.map((node) {
                             return Positioned(
-                              left: point.dx - 28,
-                              top: point.dy - 28,
+                              left: node.position.dx - 28,
+                              top: node.position.dy - 28,
                               child: GestureDetector(
-                                onTap: () => onSelectPlace(place),
+                                onTap: () => onSelectPlace(node.place),
                                 child: _RadarBlip(
-                                  place: place,
-                                  distanceMeters: distance,
-                                  isSelected: selectedPlaceId == place.id,
+                                  place: node.place,
+                                  distanceMeters: node.distanceMeters,
+                                  isSelected: selectedPlaceId == node.place.id,
+                                  showLabel:
+                                      selectedPlaceId == node.place.id ||
+                                      node.isPrimaryInCluster,
                                 ),
                               ),
                             );
@@ -1088,16 +1079,124 @@ class _RadarPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
+List<_RadarNode> _buildRadarNodes({
+  required BaseLocation baseLocation,
+  required List<Place> places,
+  required String? selectedPlaceId,
+  required Offset center,
+  required double radarRadius,
+}) {
+  final rawNodes = places.map((place) {
+    final distance = calculateDistanceMeters(
+      startLat: baseLocation.lat,
+      startLng: baseLocation.lng,
+      endLat: place.lat,
+      endLng: place.lng,
+    );
+    final bearing = _calculateBearingDegrees(
+      startLat: baseLocation.lat,
+      startLng: baseLocation.lng,
+      endLat: place.lat,
+      endLng: place.lng,
+    );
+
+    return _RadarNode(
+      place: place,
+      distanceMeters: distance,
+      position: _radarPoint(
+        center: center,
+        radius: radarRadius,
+        distanceMeters: distance,
+        bearingDegrees: bearing,
+      ),
+      isPrimaryInCluster: false,
+    );
+  }).toList();
+
+  final adjustedNodes = <_RadarNode>[];
+  final clusterThreshold = radarRadius * 0.14;
+
+  for (var index = 0; index < rawNodes.length; index += 1) {
+    final node = rawNodes[index];
+    final neighbors = rawNodes
+        .where((other) => !identical(other, node))
+        .where(
+          (other) =>
+              (node.position - other.position).distance <= clusterThreshold,
+        )
+        .toList();
+
+    final clusterIndex = neighbors.length;
+    final angleOffset = clusterIndex == 0
+        ? 0.0
+        : (clusterIndex.isEven ? 1 : -1) *
+              (10 + clusterIndex * 8) *
+              math.pi /
+              180;
+    final radialOffset = clusterIndex == 0 ? 0.0 : 10.0 + clusterIndex * 6.0;
+    final vector = node.position - center;
+    final rotated = Offset(
+      vector.dx * math.cos(angleOffset) - vector.dy * math.sin(angleOffset),
+      vector.dx * math.sin(angleOffset) + vector.dy * math.cos(angleOffset),
+    );
+    final normalized = rotated.distance == 0
+        ? const Offset(0, -1)
+        : rotated / rotated.distance;
+
+    adjustedNodes.add(
+      node.copyWith(
+        position: center + rotated + normalized * radialOffset,
+        isPrimaryInCluster:
+            neighbors.isEmpty ||
+            selectedPlaceId == node.place.id ||
+            clusterIndex == 0,
+      ),
+    );
+  }
+
+  return adjustedNodes;
+}
+
+class _RadarNode {
+  const _RadarNode({
+    required this.place,
+    required this.distanceMeters,
+    required this.position,
+    required this.isPrimaryInCluster,
+  });
+
+  final Place place;
+  final double distanceMeters;
+  final Offset position;
+  final bool isPrimaryInCluster;
+
+  _RadarNode copyWith({
+    Place? place,
+    double? distanceMeters,
+    Offset? position,
+    bool? isPrimaryInCluster,
+  }) {
+    return _RadarNode(
+      place: place ?? this.place,
+      distanceMeters: distanceMeters ?? this.distanceMeters,
+      position: position ?? this.position,
+      isPrimaryInCluster: isPrimaryInCluster ?? this.isPrimaryInCluster,
+    );
+  }
+}
+
 class _RadarBlip extends StatelessWidget {
   const _RadarBlip({
     required this.place,
     required this.distanceMeters,
     required this.isSelected,
+    required this.showLabel,
   });
 
   final Place place;
   final double distanceMeters;
   final bool isSelected;
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -1125,19 +1224,21 @@ class _RadarBlip extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 6),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 80),
-          child: Text(
-            '${place.name}\n${distanceMeters.round()}m',
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: Colors.white,
-              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+        if (showLabel) ...[
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 80),
+            child: Text(
+              '${place.name}\n${distanceMeters.round()}m',
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Colors.white,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+              ),
             ),
           ),
-        ),
+        ],
       ],
     );
   }
