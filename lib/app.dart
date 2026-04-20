@@ -737,7 +737,21 @@ class _RegisterTabState extends State<_RegisterTab> {
       _selectedPlaceId = place.id;
     });
     if (moveMap) {
-      _mapController.move(latlong.LatLng(place.lat, place.lng), 16);
+      final base = widget.controller.baseLocation;
+      if (base == null) {
+        _mapController.move(latlong.LatLng(place.lat, place.lng), 16);
+        return;
+      }
+
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints([
+            latlong.LatLng(base.lat, base.lng),
+            latlong.LatLng(place.lat, place.lng),
+          ]),
+          padding: const EdgeInsets.all(56),
+        ),
+      );
     }
   }
 }
@@ -873,6 +887,9 @@ class _CandidateMap extends StatelessWidget {
       (place) => place.id == selectedPlaceId,
       orElse: () => places.first,
     );
+    final selectedPlace = places
+        .where((place) => place.id == selectedPlaceId)
+        .firstOrNull;
     final center = latlong.LatLng(
       baseLocation?.lat ?? centerPlace.lat,
       baseLocation?.lng ?? centerPlace.lng,
@@ -892,6 +909,20 @@ class _CandidateMap extends StatelessWidget {
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'reachtrail_app',
           ),
+          if (baseLocation != null && selectedPlace != null)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: [
+                    latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
+                    latlong.LatLng(selectedPlace.lat, selectedPlace.lng),
+                  ],
+                  strokeWidth: 4,
+                  color: const Color(0xFF0D9488),
+                  pattern: StrokePattern.dashed(segments: [10, 8]),
+                ),
+              ],
+            ),
           MarkerLayer(
             markers: [
               if (baseLocation != null)
@@ -970,6 +1001,16 @@ class _MapMarker extends StatelessWidget {
         Icon(Icons.location_on, color: color, size: isSelected ? 30 : 24),
       ],
     );
+  }
+}
+
+extension<T> on Iterable<T> {
+  T? get firstOrNull {
+    final iterator = this.iterator;
+    if (!iterator.moveNext()) {
+      return null;
+    }
+    return iterator.current;
   }
 }
 
