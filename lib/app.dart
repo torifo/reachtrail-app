@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 
@@ -110,7 +111,11 @@ class ReachTrailController extends ChangeNotifier {
     placeSearchProvider = config.placeSearchProvider;
     yahooApiKey = config.yahooApiKey;
     _searchService = CompositePlaceSearchService(
-      SearchConfig(provider: placeSearchProvider, yahooApiKey: yahooApiKey),
+      SearchConfig(
+        provider: placeSearchProvider,
+        yahooApiKey: yahooApiKey,
+        yahooProxyBaseUrl: kIsWeb ? 'http://localhost:3000' : '',
+      ),
     );
   }
 

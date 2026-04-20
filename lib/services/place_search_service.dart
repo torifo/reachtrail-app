@@ -15,10 +15,15 @@ const double walkingSearchRadiusMeters = walkingSearchRadiusKm * 1000;
 const double rankingDistanceTieThresholdMeters = 120;
 
 class SearchConfig {
-  const SearchConfig({required this.provider, required this.yahooApiKey});
+  const SearchConfig({
+    required this.provider,
+    required this.yahooApiKey,
+    this.yahooProxyBaseUrl = '',
+  });
 
   final String provider;
   final String yahooApiKey;
+  final String yahooProxyBaseUrl;
 }
 
 enum SearchPurpose { lunchPlace, baseLocation }
@@ -50,10 +55,14 @@ class CompositePlaceSearchService implements PlaceSearchService {
     }
 
     final provider = _config.provider.toLowerCase();
-    if (provider == 'yahoo' && _config.yahooApiKey.isNotEmpty) {
+    if (provider == 'yahoo' &&
+        (_config.yahooApiKey.isNotEmpty ||
+            _config.yahooProxyBaseUrl.isNotEmpty)) {
       try {
-        final remote = await YahooLocalSearchService(_config.yahooApiKey)
-            .search(
+        final remote = await YahooLocalSearchService(
+          _config.yahooApiKey,
+          proxyBaseUrl: _config.yahooProxyBaseUrl,
+        ).search(
               query: normalized,
               baseLocation: baseLocation,
               nearbyOnly: nearbyOnly,
@@ -171,9 +180,10 @@ class MockPlaceSearchService implements PlaceSearchService {
 }
 
 class YahooLocalSearchService implements PlaceSearchService {
-  YahooLocalSearchService(this._apiKey);
+  YahooLocalSearchService(this._apiKey, {this.proxyBaseUrl = ''});
 
   final String _apiKey;
+  final String proxyBaseUrl;
 
   @override
   Future<List<Place>> search({
@@ -213,8 +223,7 @@ class YahooLocalSearchService implements PlaceSearchService {
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
   }) async {
-    final uri = Uri.https('map.yahooapis.jp', '/search/local/V1/localSearch', {
-      'appid': _apiKey,
+    final params = {
       'query': query,
       'output': 'json',
       'detail': 'full',
@@ -223,7 +232,17 @@ class YahooLocalSearchService implements PlaceSearchService {
       if (baseLocation != null) 'lat': '${baseLocation.lat}',
       if (baseLocation != null) 'lon': '${baseLocation.lng}',
       if (nearbyOnly) 'dist': '$walkingSearchRadiusKm',
-    });
+    };
+
+    final Uri uri;
+    if (proxyBaseUrl.isNotEmpty) {
+      uri = Uri.parse(proxyBaseUrl).replace(queryParameters: params);
+    } else {
+      uri = Uri.https('map.yahooapis.jp', '/search/local/V1/localSearch', {
+        'appid': _apiKey,
+        ...params,
+      });
+    }
     final response = await http.get(uri);
     if (response.statusCode != 200) {
       throw Exception('Yahoo API request failed: ${response.statusCode}');
