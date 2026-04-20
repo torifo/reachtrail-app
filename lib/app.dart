@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/material.dart';
@@ -683,6 +684,20 @@ class _RegisterTabState extends State<_RegisterTab> {
         if (controller.searchResults.isNotEmpty) ...[
           const SizedBox(height: 16),
           _SectionCard(
+            title: 'Radar',
+            subtitle: '船のレーダーのように、基準地点から見た方向と距離で候補を拾います。',
+            child: SizedBox(
+              height: 360,
+              child: _CandidateRadar(
+                baseLocation: base,
+                places: controller.searchResults,
+                selectedPlaceId: _selectedPlaceId,
+                onSelectPlace: _selectPlace,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _SectionCard(
             title: 'Candidate Map',
             subtitle: 'Google有料サービスは使わず、OpenStreetMapで基準地点と候補位置を見比べます。',
             child: SizedBox(
@@ -864,6 +879,334 @@ class _PlaceResultTile extends StatelessWidget {
       builder: (context) => _YahooDebugSheet(place: place),
     );
   }
+}
+
+class _CandidateRadar extends StatelessWidget {
+  const _CandidateRadar({
+    required this.baseLocation,
+    required this.places,
+    required this.selectedPlaceId,
+    required this.onSelectPlace,
+  });
+
+  final BaseLocation? baseLocation;
+  final List<Place> places;
+  final String? selectedPlaceId;
+  final ValueChanged<Place> onSelectPlace;
+
+  @override
+  Widget build(BuildContext context) {
+    if (baseLocation == null || places.isEmpty) {
+      return const Center(child: Text('基準地点と候補があるとレーダー表示できます。'));
+    }
+
+    final selectedPlace = places
+        .where((place) => place.id == selectedPlaceId)
+        .firstOrNull;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        gradient: const RadialGradient(
+          center: Alignment.center,
+          radius: 1.1,
+          colors: [Color(0xFF103E35), Color(0xFF071C18)],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.radar, color: Color(0xFF89F0D0)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    selectedPlace == null
+                        ? '候補をタップして追跡'
+                        : 'Tracking ${selectedPlace.name}',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  '5 km radius',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelMedium?.copyWith(color: Color(0xFF9CCABD)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = math.min(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
+                  final center = Offset(size / 2, size / 2);
+                  final radarRadius = size / 2;
+
+                  return Center(
+                    child: SizedBox(
+                      width: size,
+                      height: size,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          CustomPaint(
+                            size: Size.square(size),
+                            painter: _RadarPainter(),
+                          ),
+                          ...places.map((place) {
+                            final distance = calculateDistanceMeters(
+                              startLat: baseLocation!.lat,
+                              startLng: baseLocation!.lng,
+                              endLat: place.lat,
+                              endLng: place.lng,
+                            );
+                            final bearing = _calculateBearingDegrees(
+                              startLat: baseLocation!.lat,
+                              startLng: baseLocation!.lng,
+                              endLat: place.lat,
+                              endLng: place.lng,
+                            );
+                            final point = _radarPoint(
+                              center: center,
+                              radius: radarRadius,
+                              distanceMeters: distance,
+                              bearingDegrees: bearing,
+                            );
+
+                            return Positioned(
+                              left: point.dx - 28,
+                              top: point.dy - 28,
+                              child: GestureDetector(
+                                onTap: () => onSelectPlace(place),
+                                child: _RadarBlip(
+                                  place: place,
+                                  distanceMeters: distance,
+                                  isSelected: selectedPlaceId == place.id,
+                                ),
+                              ),
+                            );
+                          }),
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: Center(
+                                child: Container(
+                                  width: 18,
+                                  height: 18,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFB4FFF0),
+                                    shape: BoxShape.circle,
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        blurRadius: 20,
+                                        color: Color(0x8835F7D0),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _RadarLegend(label: 'Base', color: const Color(0xFFB4FFF0)),
+                _RadarLegend(
+                  label: 'Candidate',
+                  color: const Color(0xFF4ADE80),
+                ),
+                _RadarLegend(label: 'Selected', color: const Color(0xFFF97316)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RadarPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2;
+    final ringPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = const Color(0xFF53B89E).withValues(alpha: 0.35);
+    final crossPaint = Paint()
+      ..strokeWidth = 1
+      ..color = const Color(0xFF53B89E).withValues(alpha: 0.25);
+    final sweepPaint = Paint()
+      ..shader = SweepGradient(
+        colors: [
+          Colors.transparent,
+          const Color(0x5535F7D0),
+          const Color(0x1035F7D0),
+          Colors.transparent,
+        ],
+        stops: const [0.0, 0.08, 0.16, 0.22],
+      ).createShader(Rect.fromCircle(center: center, radius: radius));
+
+    for (final factor in [0.25, 0.5, 0.75, 1.0]) {
+      canvas.drawCircle(center, radius * factor, ringPaint);
+    }
+
+    canvas.drawLine(
+      Offset(center.dx, 0),
+      Offset(center.dx, size.height),
+      crossPaint,
+    );
+    canvas.drawLine(
+      Offset(0, center.dy),
+      Offset(size.width, center.dy),
+      crossPaint,
+    );
+
+    canvas.drawCircle(center, radius, sweepPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _RadarBlip extends StatelessWidget {
+  const _RadarBlip({
+    required this.place,
+    required this.distanceMeters,
+    required this.isSelected,
+  });
+
+  final Place place;
+  final double distanceMeters;
+  final bool isSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: isSelected ? 18 : 12,
+          height: isSelected ? 18 : 12,
+          decoration: BoxDecoration(
+            color: isSelected
+                ? const Color(0xFFF97316)
+                : const Color(0xFF4ADE80),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                blurRadius: isSelected ? 20 : 12,
+                color:
+                    (isSelected
+                            ? const Color(0xFFF97316)
+                            : const Color(0xFF4ADE80))
+                        .withValues(alpha: 0.65),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 80),
+          child: Text(
+            '${place.name}\n${distanceMeters.round()}m',
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Colors.white,
+              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RadarLegend extends StatelessWidget {
+  const _RadarLegend({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: Theme.of(
+            context,
+          ).textTheme.labelSmall?.copyWith(color: Colors.white70),
+        ),
+      ],
+    );
+  }
+}
+
+Offset _radarPoint({
+  required Offset center,
+  required double radius,
+  required double distanceMeters,
+  required double bearingDegrees,
+}) {
+  final normalizedDistance = (distanceMeters / walkingSearchRadiusMeters).clamp(
+    0.08,
+    1.0,
+  );
+  final visualRadius = radius * normalizedDistance * 0.92;
+  final radians = (bearingDegrees - 90) * math.pi / 180;
+
+  return Offset(
+    center.dx + math.cos(radians) * visualRadius,
+    center.dy + math.sin(radians) * visualRadius,
+  );
+}
+
+double _calculateBearingDegrees({
+  required double startLat,
+  required double startLng,
+  required double endLat,
+  required double endLng,
+}) {
+  final startLatRad = startLat * math.pi / 180;
+  final endLatRad = endLat * math.pi / 180;
+  final deltaLng = (endLng - startLng) * math.pi / 180;
+
+  final y = math.sin(deltaLng) * math.cos(endLatRad);
+  final x =
+      math.cos(startLatRad) * math.sin(endLatRad) -
+      math.sin(startLatRad) * math.cos(endLatRad) * math.cos(deltaLng);
+  final bearing = math.atan2(y, x) * 180 / math.pi;
+
+  return (bearing + 360) % 360;
 }
 
 class _CandidateMap extends StatelessWidget {
