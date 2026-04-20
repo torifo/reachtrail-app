@@ -21,11 +21,14 @@ class SearchConfig {
   final String yahooApiKey;
 }
 
+enum SearchPurpose { lunchPlace, baseLocation }
+
 abstract class PlaceSearchService {
   Future<List<Place>> search({
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
+    SearchPurpose purpose = SearchPurpose.lunchPlace,
   });
 }
 
@@ -39,6 +42,7 @@ class CompositePlaceSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
+    SearchPurpose purpose = SearchPurpose.lunchPlace,
   }) async {
     final normalized = query.trim();
     if (normalized.isEmpty) {
@@ -53,6 +57,7 @@ class CompositePlaceSearchService implements PlaceSearchService {
               query: normalized,
               baseLocation: baseLocation,
               nearbyOnly: nearbyOnly,
+              purpose: purpose,
             );
         if (remote.isNotEmpty) {
           return remote;
@@ -66,6 +71,7 @@ class CompositePlaceSearchService implements PlaceSearchService {
       query: normalized,
       baseLocation: baseLocation,
       nearbyOnly: nearbyOnly,
+      purpose: purpose,
     );
   }
 }
@@ -131,6 +137,7 @@ class MockPlaceSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
+    SearchPurpose purpose = SearchPurpose.lunchPlace,
   }) async {
     final lowered = query.toLowerCase();
     final filtered = _samples.where((place) {
@@ -157,6 +164,8 @@ class MockPlaceSearchService implements PlaceSearchService {
       places: filtered,
       baseLocation: baseLocation,
       deduplicate: false,
+      purpose: purpose,
+      query: query,
     );
   }
 }
@@ -171,6 +180,7 @@ class YahooLocalSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
+    SearchPurpose purpose = SearchPurpose.lunchPlace,
   }) async {
     final uri = Uri.https('map.yahooapis.jp', '/search/local/V1/localSearch', {
       'appid': _apiKey,
@@ -238,6 +248,8 @@ class YahooLocalSearchService implements PlaceSearchService {
       places: places,
       baseLocation: baseLocation,
       deduplicate: true,
+      purpose: purpose,
+      query: query,
     );
   }
 }
@@ -246,9 +258,11 @@ List<Place> rankPlaces({
   required List<Place> places,
   required BaseLocation? baseLocation,
   required bool deduplicate,
+  required SearchPurpose purpose,
+  required String query,
 }) {
   final source = deduplicate ? deduplicatePlaces(places) : [...places];
-  source.sort((a, b) => comparePlaces(a, b, baseLocation));
+  source.sort((a, b) => comparePlaces(a, b, baseLocation, purpose, query));
   return source;
 }
 
@@ -281,7 +295,32 @@ String normalizePlaceText(String value) {
   return value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
 }
 
-int comparePlaces(Place a, Place b, BaseLocation? baseLocation) {
+int comparePlaces(
+  Place a,
+  Place b,
+  BaseLocation? baseLocation,
+  SearchPurpose purpose,
+  String query,
+) {
+  if (purpose == SearchPurpose.baseLocation) {
+    final queryComparison = baseLocationQueryScore(
+      b,
+      query,
+    ).compareTo(baseLocationQueryScore(a, query));
+    if (queryComparison != 0) {
+      return queryComparison;
+    }
+
+    final buildingComparison = baseLocationBuildingScore(
+      b,
+    ).compareTo(baseLocationBuildingScore(a));
+    if (buildingComparison != 0) {
+      return buildingComparison;
+    }
+
+    return a.name.compareTo(b.name);
+  }
+
   final distanceComparison = compareDistance(a, b, baseLocation);
   if (distanceComparison != 0) {
     return distanceComparison;
@@ -332,6 +371,36 @@ int placeMetadataScore(Place place) {
   }
   if (place.category.trim().isNotEmpty) {
     score += 1;
+  }
+  if (place.address.trim().isNotEmpty) {
+    score += 1;
+  }
+  return score;
+}
+
+int baseLocationQueryScore(Place place, String query) {
+  final normalizedQuery = normalizePlaceText(query);
+  var score = 0;
+  final name = normalizePlaceText(place.name);
+  final building = normalizePlaceText(place.buildingName);
+  final address = normalizePlaceText(place.address);
+
+  if (name == normalizedQuery || building == normalizedQuery) {
+    score += 6;
+  }
+  if (name.contains(normalizedQuery) || building.contains(normalizedQuery)) {
+    score += 4;
+  }
+  if (address.contains(normalizedQuery)) {
+    score += 2;
+  }
+  return score;
+}
+
+int baseLocationBuildingScore(Place place) {
+  var score = 0;
+  if (place.buildingName.trim().isNotEmpty) {
+    score += 3;
   }
   if (place.address.trim().isNotEmpty) {
     score += 1;

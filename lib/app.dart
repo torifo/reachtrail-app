@@ -163,6 +163,7 @@ class ReachTrailController extends ChangeNotifier {
         query: query,
         baseLocation: null,
         nearbyOnly: false,
+        purpose: SearchPurpose.baseLocation,
       );
       if (baseSearchResults.isEmpty) {
         baseSearchError = '基準地点候補が見つかりません。別の建物名や住所で試してください。';

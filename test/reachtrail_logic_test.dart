@@ -149,6 +149,8 @@ void main() {
       places: [farRich, close],
       baseLocation: base,
       deduplicate: false,
+      purpose: SearchPurpose.lunchPlace,
+      query: 'shop',
     );
 
     expect(ranked.first.id, 'close');
@@ -187,6 +189,8 @@ void main() {
       places: [plain, rich],
       baseLocation: base,
       deduplicate: false,
+      purpose: SearchPurpose.lunchPlace,
+      query: 'same',
     );
 
     expect(ranked.first.id, 'rich');
