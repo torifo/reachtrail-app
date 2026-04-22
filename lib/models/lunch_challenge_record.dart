@@ -15,7 +15,10 @@ class LunchChallengeRecord {
     required this.price,
     required this.paymentMethod,
     required this.memo,
-    required this.horizontalDistanceMeters,
+    required this.straightLineDistanceMeters,
+    required this.routeDistanceMeters,
+    required this.baseVerticalFloors,
+    required this.placeVerticalFloors,
     required this.difficultyScore,
     required this.scoreVersion,
   });
@@ -31,7 +34,10 @@ class LunchChallengeRecord {
   final int? price;
   final String paymentMethod;
   final String memo;
-  final double horizontalDistanceMeters;
+  final double straightLineDistanceMeters;
+  final double routeDistanceMeters;
+  final int baseVerticalFloors;
+  final int placeVerticalFloors;
   final double difficultyScore;
   final int scoreVersion;
 
@@ -48,7 +54,10 @@ class LunchChallengeRecord {
     bool clearPrice = false,
     String? paymentMethod,
     String? memo,
-    double? horizontalDistanceMeters,
+    double? straightLineDistanceMeters,
+    double? routeDistanceMeters,
+    int? baseVerticalFloors,
+    int? placeVerticalFloors,
     double? difficultyScore,
     int? scoreVersion,
   }) {
@@ -64,8 +73,11 @@ class LunchChallengeRecord {
       price: clearPrice ? null : price ?? this.price,
       paymentMethod: paymentMethod ?? this.paymentMethod,
       memo: memo ?? this.memo,
-      horizontalDistanceMeters:
-          horizontalDistanceMeters ?? this.horizontalDistanceMeters,
+      straightLineDistanceMeters:
+          straightLineDistanceMeters ?? this.straightLineDistanceMeters,
+      routeDistanceMeters: routeDistanceMeters ?? this.routeDistanceMeters,
+      baseVerticalFloors: baseVerticalFloors ?? this.baseVerticalFloors,
+      placeVerticalFloors: placeVerticalFloors ?? this.placeVerticalFloors,
       difficultyScore: difficultyScore ?? this.difficultyScore,
       scoreVersion: scoreVersion ?? this.scoreVersion,
     );
@@ -84,7 +96,10 @@ class LunchChallengeRecord {
       'price': price,
       'paymentMethod': paymentMethod,
       'memo': memo,
-      'horizontalDistanceMeters': horizontalDistanceMeters,
+      'straightLineDistanceMeters': straightLineDistanceMeters,
+      'routeDistanceMeters': routeDistanceMeters,
+      'baseVerticalFloors': baseVerticalFloors,
+      'placeVerticalFloors': placeVerticalFloors,
       'difficultyScore': difficultyScore,
       'scoreVersion': scoreVersion,
     };
@@ -105,8 +120,16 @@ class LunchChallengeRecord {
       price: (json['price'] as num?)?.toInt(),
       paymentMethod: (json['paymentMethod'] as String?) ?? '',
       memo: (json['memo'] as String?) ?? '',
-      horizontalDistanceMeters: (json['horizontalDistanceMeters'] as num)
-          .toDouble(),
+      straightLineDistanceMeters:
+          (json['straightLineDistanceMeters'] as num?)?.toDouble() ??
+          (json['horizontalDistanceMeters'] as num?)?.toDouble() ??
+          0,
+      routeDistanceMeters:
+          (json['routeDistanceMeters'] as num?)?.toDouble() ??
+          (json['horizontalDistanceMeters'] as num?)?.toDouble() ??
+          0,
+      baseVerticalFloors: (json['baseVerticalFloors'] as num?)?.toInt() ?? 0,
+      placeVerticalFloors: (json['placeVerticalFloors'] as num?)?.toInt() ?? 0,
       difficultyScore: (json['difficultyScore'] as num).toDouble(),
       scoreVersion: (json['scoreVersion'] as num).toInt(),
     );

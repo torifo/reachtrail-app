@@ -2,19 +2,23 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show Listenable, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 
 import 'models/base_location.dart';
 import 'models/lunch_challenge_record.dart';
 import 'models/place.dart';
+import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
 import 'services/persistence_service.dart';
 import 'services/place_search_service.dart';
 import 'utils/distance_calculator.dart';
 import 'utils/floor_parser.dart';
 import 'utils/score_calculator.dart';
+import 'widgets/google_sign_in_web_button_stub.dart'
+    if (dart.library.js_interop) 'widgets/google_sign_in_web_button_web.dart';
 
 class ReachTrailApp extends StatefulWidget {
   const ReachTrailApp({super.key});
@@ -25,18 +29,23 @@ class ReachTrailApp extends StatefulWidget {
 
 class _ReachTrailAppState extends State<ReachTrailApp> {
   late final ReachTrailController _controller;
+  late final GoogleAuthService _authService;
 
   @override
   void initState() {
     super.initState();
+    final configService = LocalConfigService();
     _controller = ReachTrailController(
       persistence: PersistenceService(),
-      configService: LocalConfigService(),
+      configService: configService,
     )..load();
+    _authService = GoogleAuthService(configService: configService)
+      ..initialize();
   }
 
   @override
   void dispose() {
+    _authService.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -44,20 +53,67 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _controller,
+      animation: Listenable.merge([_controller, _authService]),
       builder: (context, _) {
         return MaterialApp(
           title: 'ReachTrail',
           debugShowCheckedModeBanner: false,
           theme: ThemeData(
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF0D9488),
-              brightness: Brightness.light,
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF0F766E),
+              secondary: Color(0xFFB45309),
+              surface: Color(0xFFFFFBF5),
+              error: Color(0xFFB42318),
             ),
-            scaffoldBackgroundColor: const Color(0xFFF5F3ED),
+            scaffoldBackgroundColor: const Color(0xFFF3EEE2),
             useMaterial3: true,
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Color(0xFFF3EEE2),
+              surfaceTintColor: Colors.transparent,
+              scrolledUnderElevation: 0,
+            ),
+            cardTheme: CardThemeData(
+              color: Colors.white.withValues(alpha: 0.88),
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(28),
+                side: BorderSide(
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.08),
+                ),
+              ),
+            ),
+            inputDecorationTheme: InputDecorationTheme(
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.82),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: const BorderSide(color: Color(0xFFD7D1C3)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: const BorderSide(color: Color(0xFFD7D1C3)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: const BorderSide(
+                  color: Color(0xFF0F766E),
+                  width: 1.4,
+                ),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 16,
+              ),
+            ),
           ),
-          home: ReachTrailHome(controller: _controller),
+          home: _authService.isInitializing
+              ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+              : !_authService.isSignedIn
+              ? ReachTrailSignInScreen(authService: _authService)
+              : ReachTrailHome(
+                  controller: _controller,
+                  authService: _authService,
+                ),
         );
       },
     );
@@ -78,8 +134,10 @@ class ReachTrailController extends ChangeNotifier {
   bool isBootstrapping = true;
   bool isSearching = false;
   bool isBaseSearching = false;
+  bool isBuildingSearching = false;
   String? errorMessage;
   String? baseSearchError;
+  String? buildingSearchError;
   String placeSearchProvider = 'mock';
   String yahooApiKey = '';
   BaseLocation? baseLocation;
@@ -87,6 +145,7 @@ class ReachTrailController extends ChangeNotifier {
   List<LunchChallengeRecord> records = const [];
   List<Place> searchResults = const [];
   List<Place> baseSearchResults = const [];
+  List<Place> buildingSearchResults = const [];
   RecordSort recordSort = RecordSort.latest;
 
   Future<void> load() async {
@@ -114,7 +173,9 @@ class ReachTrailController extends ChangeNotifier {
       SearchConfig(
         provider: placeSearchProvider,
         yahooApiKey: yahooApiKey,
-        yahooProxyBaseUrl: kIsWeb ? 'http://localhost:3000' : '',
+        yahooProxyBaseUrl: config.yahooProxyBaseUrl.isNotEmpty
+            ? config.yahooProxyBaseUrl
+            : (kIsWeb ? 'http://localhost:3000' : ''),
       ),
     );
   }
@@ -124,6 +185,11 @@ class ReachTrailController extends ChangeNotifier {
     required double lat,
     required double lng,
     required String floorLabel,
+    required int? floorNumber,
+    required String entryFloorLabel,
+    required int? entryFloorNumber,
+    required bool hasElevator,
+    required int? elevatorRideCount,
     required String memo,
   }) async {
     final location = BaseLocation(
@@ -132,6 +198,11 @@ class ReachTrailController extends ChangeNotifier {
       lat: lat,
       lng: lng,
       floorLabel: floorLabel,
+      floorNumber: floorNumber,
+      entryFloorLabel: entryFloorLabel,
+      entryFloorNumber: entryFloorNumber,
+      hasElevator: hasElevator,
+      elevatorRideCount: elevatorRideCount,
       memo: memo,
     );
     await _persistence.saveBaseLocation(location);
@@ -142,6 +213,8 @@ class ReachTrailController extends ChangeNotifier {
   Future<void> searchPlaces(String query, {required bool nearbyOnly}) async {
     isSearching = true;
     errorMessage = null;
+    buildingSearchError = null;
+    buildingSearchResults = const [];
     notifyListeners();
     try {
       searchResults = await _searchService!.search(
@@ -157,6 +230,29 @@ class ReachTrailController extends ChangeNotifier {
       searchResults = const [];
     } finally {
       isSearching = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> searchBuildingCandidates(String query) async {
+    isBuildingSearching = true;
+    buildingSearchError = null;
+    notifyListeners();
+    try {
+      buildingSearchResults = await _searchService!.search(
+        query: query,
+        baseLocation: null,
+        nearbyOnly: false,
+        purpose: SearchPurpose.baseLocation,
+      );
+      if (buildingSearchResults.isEmpty) {
+        buildingSearchError = '建物候補が見つかりません。建物名や住所の一部で試してください。';
+      }
+    } catch (error) {
+      buildingSearchError = '建物候補検索に失敗しました: $error';
+      buildingSearchResults = const [];
+    } finally {
+      isBuildingSearching = false;
       notifyListeners();
     }
   }
@@ -187,6 +283,7 @@ class ReachTrailController extends ChangeNotifier {
   Future<void> saveRecord({
     String? recordId,
     required Place place,
+    required double? routeDistanceMeters,
     required DateTime visitedAt,
     required int timeLimitMinutes,
     required DineType dineType,
@@ -200,15 +297,29 @@ class ReachTrailController extends ChangeNotifier {
       throw StateError('Base location is not set.');
     }
 
-    final distance = calculateDistanceMeters(
+    final straightLineDistance = calculateDistanceMeters(
       startLat: currentBase.lat,
       startLng: currentBase.lng,
       endLat: place.lat,
       endLng: place.lng,
     );
+    final effectiveRouteDistance = routeDistanceMeters ?? straightLineDistance;
+    final baseVerticalFloors = calculateVerticalFloorTravel(
+      startFloorNumber: currentBase.floorNumber,
+      entryFloorNumber: currentBase.entryFloorNumber,
+      destinationFloorNumber: null,
+    );
+    final placeVerticalFloors = calculateVerticalFloorTravel(
+      startFloorNumber: null,
+      entryFloorNumber: place.entranceFloorNumber,
+      destinationFloorNumber: place.floorNumber,
+    );
     final score = calculateDifficultyScore(
-      horizontalDistanceMeters: distance,
-      floorNumber: place.floorNumber,
+      routeDistanceMeters: effectiveRouteDistance,
+      baseVerticalFloors: baseVerticalFloors,
+      placeVerticalFloors: placeVerticalFloors,
+      baseHasElevator: currentBase.hasElevator,
+      placeHasElevator: place.hasElevator,
       dineType: dineType,
     );
     final savedPlace = _upsertPlace(place);
@@ -224,7 +335,10 @@ class ReachTrailController extends ChangeNotifier {
       price: price,
       paymentMethod: paymentMethod,
       memo: memo,
-      horizontalDistanceMeters: distance,
+      straightLineDistanceMeters: straightLineDistance,
+      routeDistanceMeters: effectiveRouteDistance,
+      baseVerticalFloors: baseVerticalFloors,
+      placeVerticalFloors: placeVerticalFloors,
       difficultyScore: score,
       scoreVersion: currentScoreVersion,
     );
@@ -252,20 +366,39 @@ class ReachTrailController extends ChangeNotifier {
     var updatedCount = 0;
     final recalculated = records.map((record) {
       final place = Place.fromJson(record.placeSnapshot);
-      final distance = calculateDistanceMeters(
+      final straightLineDistance = calculateDistanceMeters(
         startLat: currentBase.lat,
         startLng: currentBase.lng,
         endLat: place.lat,
         endLng: place.lng,
       );
+      final baseVerticalFloors = calculateVerticalFloorTravel(
+        startFloorNumber: currentBase.floorNumber,
+        entryFloorNumber: currentBase.entryFloorNumber,
+        destinationFloorNumber: null,
+      );
+      final placeVerticalFloors = calculateVerticalFloorTravel(
+        startFloorNumber: null,
+        entryFloorNumber: place.entranceFloorNumber,
+        destinationFloorNumber: place.floorNumber,
+      );
+      final routeDistance = record.routeDistanceMeters == 0
+          ? straightLineDistance
+          : record.routeDistanceMeters;
       final score = calculateDifficultyScore(
-        horizontalDistanceMeters: distance,
-        floorNumber: place.floorNumber,
+        routeDistanceMeters: routeDistance,
+        baseVerticalFloors: baseVerticalFloors,
+        placeVerticalFloors: placeVerticalFloors,
+        baseHasElevator: currentBase.hasElevator,
+        placeHasElevator: place.hasElevator,
         dineType: record.dineType,
       );
 
       final changed =
-          record.horizontalDistanceMeters != distance ||
+          record.straightLineDistanceMeters != straightLineDistance ||
+          record.routeDistanceMeters != routeDistance ||
+          record.baseVerticalFloors != baseVerticalFloors ||
+          record.placeVerticalFloors != placeVerticalFloors ||
           record.difficultyScore != score ||
           record.scoreVersion != currentScoreVersion;
       if (changed) {
@@ -273,7 +406,10 @@ class ReachTrailController extends ChangeNotifier {
       }
 
       return record.copyWith(
-        horizontalDistanceMeters: distance,
+        straightLineDistanceMeters: straightLineDistance,
+        routeDistanceMeters: routeDistance,
+        baseVerticalFloors: baseVerticalFloors,
+        placeVerticalFloors: placeVerticalFloors,
         difficultyScore: score,
         scoreVersion: currentScoreVersion,
       );
@@ -319,8 +455,7 @@ class ReachTrailController extends ChangeNotifier {
         copy.sort((a, b) => b.visitedAt.compareTo(a.visitedAt));
       case RecordSort.distance:
         copy.sort(
-          (a, b) =>
-              b.horizontalDistanceMeters.compareTo(a.horizontalDistanceMeters),
+          (a, b) => b.routeDistanceMeters.compareTo(a.routeDistanceMeters),
         );
       case RecordSort.difficulty:
         copy.sort((a, b) => b.difficultyScore.compareTo(a.difficultyScore));
@@ -373,9 +508,14 @@ class ReachTrailController extends ChangeNotifier {
 }
 
 class ReachTrailHome extends StatefulWidget {
-  const ReachTrailHome({super.key, required this.controller});
+  const ReachTrailHome({
+    super.key,
+    required this.controller,
+    required this.authService,
+  });
 
   final ReachTrailController controller;
+  final GoogleAuthService authService;
 
   @override
   State<ReachTrailHome> createState() => _ReachTrailHomeState();
@@ -395,16 +535,32 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
       appBar: AppBar(
         title: const Text('ReachTrail'),
         actions: [
+          if (widget.authService.currentUser case final user?)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Center(
+                child: Text(
+                  user.displayName?.isNotEmpty == true
+                      ? user.displayName!
+                      : user.email,
+                ),
+              ),
+            ),
           Padding(
-            padding: const EdgeInsets.only(right: 16),
+            padding: const EdgeInsets.only(right: 12),
             child: Center(
               child: Text(
                 controller.placeSearchProvider == 'mock' ||
                         controller.yahooApiKey.isEmpty
                     ? 'Mock Search'
-                    : 'Yahoo Search',
+                    : 'Yahoo',
               ),
             ),
+          ),
+          IconButton(
+            tooltip: 'Sign out',
+            onPressed: widget.authService.signOut,
+            icon: const Icon(Icons.logout),
           ),
         ],
       ),
@@ -454,11 +610,16 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _searchController;
   late final TextEditingController _nameController;
   late final TextEditingController _floorController;
+  late final TextEditingController _floorNumberController;
+  late final TextEditingController _entryFloorController;
+  late final TextEditingController _entryFloorNumberController;
+  late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
   Place? _selectedCandidate;
   double? _selectedLat;
   double? _selectedLng;
+  bool _hasElevator = true;
 
   @override
   void initState() {
@@ -467,9 +628,22 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _searchController = TextEditingController();
     _nameController = TextEditingController(text: base?.name ?? 'Office');
     _floorController = TextEditingController(text: base?.floorLabel ?? '');
+    _floorNumberController = TextEditingController(
+      text: base?.floorNumber?.toString() ?? '',
+    );
+    _entryFloorController = TextEditingController(
+      text: base?.entryFloorLabel ?? '',
+    );
+    _entryFloorNumberController = TextEditingController(
+      text: base?.entryFloorNumber?.toString() ?? '',
+    );
+    _elevatorRideCountController = TextEditingController(
+      text: base?.elevatorRideCount?.toString() ?? '',
+    );
     _memoController = TextEditingController(text: base?.memo ?? '');
     _selectedLat = base?.lat;
     _selectedLng = base?.lng;
+    _hasElevator = base?.hasElevator ?? true;
   }
 
   @override
@@ -477,6 +651,10 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _searchController.dispose();
     _nameController.dispose();
     _floorController.dispose();
+    _floorNumberController.dispose();
+    _entryFloorController.dispose();
+    _entryFloorNumberController.dispose();
+    _elevatorRideCountController.dispose();
     _memoController.dispose();
     super.dispose();
   }
@@ -540,14 +718,86 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   validator: (value) =>
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
                 ),
-                TextFormField(
-                  controller: _floorController,
-                  decoration: const InputDecoration(
-                    labelText: '階数（任意）',
-                    hintText: '例: 22F, B1, 3F',
-                    prefixIcon: Icon(Icons.layers_outlined),
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _floorController,
+                        decoration: const InputDecoration(
+                          labelText: '拠点フロア(任意)',
+                          hintText: '例: 26F',
+                          prefixIcon: Icon(Icons.business_center_outlined),
+                        ),
+                        onChanged: (value) {
+                          final parsed = parseFloorNumber(value);
+                          if (parsed != null &&
+                              _floorNumberController.text.trim().isEmpty) {
+                            _floorNumberController.text = '$parsed';
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _floorNumberController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          signed: true,
+                        ),
+                        decoration: const InputDecoration(labelText: '拠点階(数値)'),
+                      ),
+                    ),
+                  ],
                 ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _entryFloorController,
+                        decoration: const InputDecoration(
+                          labelText: '出入口フロア(任意)',
+                          hintText: '例: 2F, 1F, B1',
+                          prefixIcon: Icon(Icons.exit_to_app),
+                        ),
+                        onChanged: (value) {
+                          final parsed = parseFloorNumber(value);
+                          if (parsed != null &&
+                              _entryFloorNumberController.text.trim().isEmpty) {
+                            _entryFloorNumberController.text = '$parsed';
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _entryFloorNumberController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          signed: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: '出入口階(数値)',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('拠点側にエレベータあり'),
+                  subtitle: const Text('難易度計算で縦移動の負荷を軽減します。'),
+                  value: _hasElevator,
+                  onChanged: (value) => setState(() => _hasElevator = value),
+                ),
+                if (_hasElevator)
+                  TextFormField(
+                    controller: _elevatorRideCountController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'エレベータ乗車回数(任意)',
+                      hintText: '例: 1, 2',
+                    ),
+                  ),
                 TextFormField(
                   controller: _memoController,
                   decoration: const InputDecoration(labelText: 'メモ'),
@@ -578,6 +828,17 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                         lat: _selectedLat!,
                         lng: _selectedLng!,
                         floorLabel: _floorController.text.trim(),
+                        floorNumber: int.tryParse(
+                          _floorNumberController.text.trim(),
+                        ),
+                        entryFloorLabel: _entryFloorController.text.trim(),
+                        entryFloorNumber: int.tryParse(
+                          _entryFloorNumberController.text.trim(),
+                        ),
+                        hasElevator: _hasElevator,
+                        elevatorRideCount: int.tryParse(
+                          _elevatorRideCountController.text.trim(),
+                        ),
                         memo: _memoController.text.trim(),
                       );
                       if (!context.mounted) {
@@ -596,54 +857,49 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
         ),
         const SizedBox(height: 16),
         _SectionCard(
-          title: 'Status',
-          subtitle: '実装着手前に確認したかった成立性を、画面から追える形にしています。',
+          title: 'Current Base',
+          subtitle: '基準地点の設定内容を確認し、評価に使う出入口フロアや移動条件を見直せます。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 12,
             children: [
               _MetricTile(
-                label: '検索プロバイダ',
-                value:
-                    controller.placeSearchProvider == 'mock' ||
-                        controller.yahooApiKey.isEmpty
-                    ? 'Mock fallback'
-                    : 'Yahoo API',
-              ),
-              _MetricTile(
-                label: 'Yahoo API Key',
-                value: controller.yahooApiKey.isEmpty ? '未設定' : '設定済み',
-              ),
-              _MetricTile(
                 label: '登録記録数',
                 value: '${controller.records.length} 件',
               ),
               _MetricTile(
-                label: '現在の基準地点',
+                label: '基準地点',
+                value: base == null ? '未設定' : base.name,
+              ),
+              _MetricTile(
+                label: '拠点フロア',
+                value: base == null || base.floorLabel.isEmpty
+                    ? '未設定'
+                    : base.floorLabel,
+              ),
+              _MetricTile(
+                label: '出入口フロア',
+                value: base == null || base.entryFloorLabel.isEmpty
+                    ? '未設定'
+                    : base.entryFloorLabel,
+              ),
+              _MetricTile(
+                label: '縦移動補助',
                 value: base == null
                     ? '未設定'
-                    : [
-                        base.name,
-                        if (base.floorLabel.isNotEmpty) base.floorLabel,
-                        '(${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)})',
-                      ].join(' '),
+                    : base.hasElevator
+                    ? 'エレベータあり'
+                    : '階段中心',
               ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await controller.reloadConfig();
-                    if (!context.mounted) {
-                      return;
-                    }
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('設定ファイルを再読み込みしました。')),
-                    );
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('設定を再読込'),
+              if (base != null && base.hasElevator)
+                _MetricTile(
+                  label: '乗車回数',
+                  value: base.elevatorRideCount?.toString() ?? '未設定',
                 ),
-              ),
+              if (base != null)
+                Text(
+                  '座標: ${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)}',
+                ),
             ],
           ),
         ),
@@ -673,7 +929,11 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _nameController.text = place.buildingName.isNotEmpty
           ? place.buildingName
           : place.name;
-      _floorController.text = '';
+      _floorController.text = place.floorLabel;
+      _floorNumberController.text = place.floorNumber?.toString() ?? '';
+      _entryFloorController.text = '';
+      _entryFloorNumberController.text = '';
+      _elevatorRideCountController.text = '';
       _memoController.text = place.address;
     });
   }
@@ -755,14 +1015,17 @@ class _RegisterTab extends StatefulWidget {
 
 class _RegisterTabState extends State<_RegisterTab> {
   final _searchController = TextEditingController();
+  final _buildingSearchController = TextEditingController();
   final _mapController = MapController();
   bool _nearbyOnly = true;
   bool _showDebugInfo = false;
   String? _selectedPlaceId;
+  String? _lastSearchQuery;
 
   @override
   void dispose() {
     _searchController.dispose();
+    _buildingSearchController.dispose();
     super.dispose();
   }
 
@@ -776,7 +1039,7 @@ class _RegisterTabState extends State<_RegisterTab> {
       children: [
         _SectionCard(
           title: 'Place Search',
-          subtitle: '候補選択を前提にしつつ、候補が弱い場合は手入力で完結させます。',
+          subtitle: '候補選択を前提にしつつ、候補が弱い場合は手入力で対応できます。',
           child: Column(
             spacing: 16,
             children: [
@@ -846,7 +1109,19 @@ class _RegisterTabState extends State<_RegisterTab> {
           title: 'Candidates',
           subtitle: '基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
           child: controller.searchResults.isEmpty
-              ? const Text('検索結果はまだありません。')
+              ? _EmptyCandidateState(
+                  searchedQuery: _lastSearchQuery,
+                  baseLocation: base,
+                  buildingSearchController: _buildingSearchController,
+                  isBuildingSearching: controller.isBuildingSearching,
+                  buildingSearchError: controller.buildingSearchError,
+                  buildingSearchResults: controller.buildingSearchResults,
+                  onSearchBuilding: _runBuildingSearch,
+                  onUseBuildingCandidate: (candidate) => _openRecordSheet(
+                    context,
+                    place: _buildPlaceFromBuildingCandidate(candidate),
+                  ),
+                )
               : Column(
                   spacing: 12,
                   children: controller.searchResults
@@ -881,7 +1156,7 @@ class _RegisterTabState extends State<_RegisterTab> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Candidate Map',
-            subtitle: 'Google有料サービスは使わず、OpenStreetMapで基準地点と候補位置を見比べます。',
+            subtitle: 'Google有料サービスは利用しておらず、OpenStreetMapで基準地点と候補位置を見比べられます。',
             child: SizedBox(
               height: 320,
               child: _CandidateMap(
@@ -899,13 +1174,14 @@ class _RegisterTabState extends State<_RegisterTab> {
   }
 
   Future<void> _runSearch() async {
-    if (_searchController.text.trim().isEmpty) {
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
       return;
     }
-    await widget.controller.searchPlaces(
-      _searchController.text.trim(),
-      nearbyOnly: _nearbyOnly,
-    );
+    setState(() {
+      _lastSearchQuery = query;
+    });
+    await widget.controller.searchPlaces(query, nearbyOnly: _nearbyOnly);
     if (!mounted) {
       return;
     }
@@ -913,6 +1189,14 @@ class _RegisterTabState extends State<_RegisterTab> {
     if (results.isNotEmpty) {
       _selectPlace(results.first, moveMap: true);
     }
+  }
+
+  Future<void> _runBuildingSearch() async {
+    final query = _buildingSearchController.text.trim();
+    if (query.isEmpty) {
+      return;
+    }
+    await widget.controller.searchBuildingCandidates(query);
   }
 
   Future<void> _openRecordSheet(BuildContext context, {Place? place}) async {
@@ -950,6 +1234,25 @@ class _RegisterTabState extends State<_RegisterTab> {
         ),
       );
     }
+  }
+
+  Place _buildPlaceFromBuildingCandidate(Place buildingCandidate) {
+    final storeName = (_lastSearchQuery ?? '').trim();
+    return Place(
+      id: 'manual-building-${buildingCandidate.id}',
+      provider: buildingCandidate.provider,
+      providerPlaceId: 'manual-building-${buildingCandidate.providerPlaceId}',
+      name: storeName.isEmpty ? buildingCandidate.name : storeName,
+      lat: buildingCandidate.lat,
+      lng: buildingCandidate.lng,
+      address: buildingCandidate.address,
+      buildingName: buildingCandidate.buildingName.isNotEmpty
+          ? buildingCandidate.buildingName
+          : buildingCandidate.name,
+      floorLabel: buildingCandidate.floorLabel,
+      floorNumber: buildingCandidate.floorNumber,
+      rawPayload: buildingCandidate.rawPayload,
+    );
   }
 }
 
@@ -1023,7 +1326,7 @@ class _PlaceResultTile extends StatelessWidget {
                     _Tag(label: place.floorLabel),
                   if (place.category.isNotEmpty) _Tag(label: place.category),
                   if (distance != null)
-                    _Tag(label: '${distance.round()} m from base'),
+                    _Tag(label: '${distance.round()}m from base'),
                 ],
               ),
               if (showDebugInfo && place.provider == 'yahoo')
@@ -1040,7 +1343,11 @@ class _PlaceResultTile extends StatelessWidget {
                         label: const Text('Debug'),
                       ),
                     const SizedBox(width: 8),
-                    FilledButton.tonal(
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF0F766E),
+                        foregroundColor: Colors.white,
+                      ),
                       onPressed: onUse,
                       child: const Text('この候補で記録'),
                     ),
@@ -1059,6 +1366,152 @@ class _PlaceResultTile extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       builder: (context) => _YahooDebugSheet(place: place),
+    );
+  }
+}
+
+class _EmptyCandidateState extends StatelessWidget {
+  const _EmptyCandidateState({
+    required this.searchedQuery,
+    required this.baseLocation,
+    required this.buildingSearchController,
+    required this.isBuildingSearching,
+    required this.buildingSearchError,
+    required this.buildingSearchResults,
+    required this.onSearchBuilding,
+    required this.onUseBuildingCandidate,
+  });
+
+  final String? searchedQuery;
+  final BaseLocation? baseLocation;
+  final TextEditingController buildingSearchController;
+  final bool isBuildingSearching;
+  final String? buildingSearchError;
+  final List<Place> buildingSearchResults;
+  final VoidCallback onSearchBuilding;
+  final ValueChanged<Place> onUseBuildingCandidate;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = searchedQuery?.trim() ?? '';
+    if (query.isEmpty) {
+      return const Text('検索結果はまだありません。');
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 12,
+      children: [
+        Text('「$query」の店舗候補は見つかりませんでした。'),
+        const Text('Yahoo に店舗掲載がない場合は、建物名と階数を使って記録できます。建物名か住所で候補を探してください。'),
+        if (baseLocation != null)
+          Text(
+            '基準地点: ${baseLocation!.name}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: buildingSearchController,
+                decoration: const InputDecoration(
+                  labelText: '建物名 / 住所で再検索',
+                  prefixIcon: Icon(Icons.apartment_outlined),
+                ),
+                onSubmitted: (_) => onSearchBuilding(),
+              ),
+            ),
+            const SizedBox(width: 12),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: isBuildingSearching ? null : onSearchBuilding,
+              child: isBuildingSearching
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('建物検索'),
+            ),
+          ],
+        ),
+        if (buildingSearchError != null)
+          Text(
+            buildingSearchError!,
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+        if (buildingSearchResults.isNotEmpty)
+          ...buildingSearchResults.map(
+            (place) => _BuildingCandidateTile(
+              place: place,
+              searchedQuery: query,
+              onUse: () => onUseBuildingCandidate(place),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _BuildingCandidateTile extends StatelessWidget {
+  const _BuildingCandidateTile({
+    required this.place,
+    required this.searchedQuery,
+    required this.onUse,
+  });
+
+  final Place place;
+  final String searchedQuery;
+  final VoidCallback onUse;
+
+  @override
+  Widget build(BuildContext context) {
+    final buildingName = place.buildingName.isNotEmpty
+        ? place.buildingName
+        : place.name;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFDED7CC)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 8,
+          children: [
+            Text(buildingName, style: Theme.of(context).textTheme.titleSmall),
+            Text(place.address),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                const _Tag(label: 'BUILDING'),
+                if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
+                if (place.category.isNotEmpty) _Tag(label: place.category),
+              ],
+            ),
+            Text(
+              '店舗名は「$searchedQuery」を使い、建物名・座標・階数候補を引き継いで記録します。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonal(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF0F766E),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: onUse,
+                child: const Text('この建物情報で記録'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1210,6 +1663,316 @@ class _CandidateRadar extends StatelessWidget {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class ReachTrailSignInScreen extends StatelessWidget {
+  const ReachTrailSignInScreen({super.key, required this.authService});
+
+  final GoogleAuthService authService;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFF4EEE0), Color(0xFFE8F2EC), Color(0xFFF8F3EA)],
+          ),
+        ),
+        child: Stack(
+          children: [
+            const Positioned(
+              top: -80,
+              left: -60,
+              child: _BackdropOrb(
+                size: 240,
+                colors: [Color(0x33B45309), Color(0x00B45309)],
+              ),
+            ),
+            const Positioned(
+              right: -40,
+              top: 100,
+              child: _BackdropOrb(
+                size: 220,
+                colors: [Color(0x3314B8A6), Color(0x0014B8A6)],
+              ),
+            ),
+            const Positioned(
+              bottom: -120,
+              right: 40,
+              child: _BackdropOrb(
+                size: 280,
+                colors: [Color(0x260F766E), Color(0x000F766E)],
+              ),
+            ),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 960),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final compact = constraints.maxWidth < 760;
+                      return Flex(
+                        direction: compact ? Axis.vertical : Axis.horizontal,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            flex: compact ? 0 : 11,
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                right: compact ? 0 : 28,
+                                bottom: compact ? 24 : 0,
+                              ),
+                              child: _HeroPanel(theme: theme),
+                            ),
+                          ),
+                          Expanded(
+                            flex: compact ? 0 : 9,
+                            child: Card(
+                              margin: EdgeInsets.zero,
+                              child: Padding(
+                                padding: const EdgeInsets.all(28),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    Text(
+                                      'Sign In',
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(
+                                            letterSpacing: 0.4,
+                                            color: const Color(0xFF0F766E),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      'Google アカウントでサインインして、基準地点からの距離と階数をまとめて記録します。',
+                                      style: theme.textTheme.bodyLarge,
+                                    ),
+                                    const SizedBox(height: 24),
+                                    if (kIsWeb &&
+                                        !GoogleSignIn.instance
+                                            .supportsAuthenticate())
+                                      Center(
+                                        child: buildGoogleWebSignInButton(),
+                                      )
+                                    else
+                                      FilledButton.icon(
+                                        onPressed: authService.isSigningIn
+                                            ? null
+                                            : authService.signIn,
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: const Color(
+                                            0xFF0F766E,
+                                          ),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 18,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              18,
+                                            ),
+                                          ),
+                                        ),
+                                        icon: authService.isSigningIn
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                      color: Colors.white,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.login),
+                                        label: const Text('Google でサインイン'),
+                                      ),
+                                    const SizedBox(height: 18),
+                                    Text(
+                                      'メール認証は後続対応です。公開版では Google ログインを先行提供します。',
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color: const Color(0xFF475569),
+                                          ),
+                                    ),
+                                    if (authService.errorMessage
+                                        case final message?) ...[
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        message,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                              color: theme.colorScheme.error,
+                                            ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeroPanel extends StatelessWidget {
+  const _HeroPanel({required this.theme});
+
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.72),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: const Color(0x1A0F172A)),
+          ),
+          child: Text(
+            'Lunch Distance Tracker',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: const Color(0xFF0F766E),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text(
+          'ReachTrail',
+          style: theme.textTheme.displaySmall?.copyWith(
+            fontWeight: FontWeight.w800,
+            height: 0.94,
+            color: const Color(0xFF111827),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          '基準地点から店までの距離、階数、到達難易度をひとつの流れで記録するためのランチログ。',
+          style: theme.textTheme.titleMedium?.copyWith(
+            color: const Color(0xFF334155),
+            height: 1.5,
+          ),
+        ),
+        const SizedBox(height: 26),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: const [
+            _Tag(label: 'Google Sign-In'),
+            _Tag(label: 'Yahoo'),
+            _Tag(label: 'Building + Floor Fallback'),
+          ],
+        ),
+        const SizedBox(height: 28),
+        const _HeroFeature(
+          title: 'Search',
+          description: '店名で候補を探し、見つからない時は建物名と住所から補完します。',
+        ),
+        const SizedBox(height: 14),
+        const _HeroFeature(
+          title: 'Measure',
+          description: '基準地点からの距離と階数を使って、移動の負荷を一目で確認できます。',
+        ),
+        const SizedBox(height: 14),
+        const _HeroFeature(
+          title: 'Record',
+          description: '候補選択でも手入力でも、後から見返せる形でランチ記録を残せます。',
+        ),
+      ],
+    );
+  }
+}
+
+class _HeroFeature extends StatelessWidget {
+  const _HeroFeature({required this.title, required this.description});
+
+  final String title;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          margin: const EdgeInsets.only(top: 7),
+          decoration: const BoxDecoration(
+            color: Color(0xFFB45309),
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                description,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF475569),
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BackdropOrb extends StatelessWidget {
+  const _BackdropOrb({required this.size, required this.colors});
+
+  final double size;
+  final List<Color> colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(colors: colors),
         ),
       ),
     );
@@ -1806,8 +2569,12 @@ class _RecordSheetState extends State<_RecordSheet> {
   late final TextEditingController _buildingController;
   late final TextEditingController _floorLabelController;
   late final TextEditingController _floorNumberController;
+  late final TextEditingController _entranceFloorLabelController;
+  late final TextEditingController _entranceFloorNumberController;
+  late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _latController;
   late final TextEditingController _lngController;
+  late final TextEditingController _routeDistanceController;
   late final TextEditingController _categoryController;
   late final TextEditingController _menuController;
   late final TextEditingController _priceController;
@@ -1817,6 +2584,7 @@ class _RecordSheetState extends State<_RecordSheet> {
   DineType _dineType = DineType.dineIn;
   DateTime _visitedAt = DateTime.now();
   bool _submitting = false;
+  bool _hasElevator = true;
 
   @override
   void initState() {
@@ -1833,8 +2601,20 @@ class _RecordSheetState extends State<_RecordSheet> {
     _floorNumberController = TextEditingController(
       text: place?.floorNumber?.toString() ?? '',
     );
+    _entranceFloorLabelController = TextEditingController(
+      text: place?.entranceFloorLabel ?? '',
+    );
+    _entranceFloorNumberController = TextEditingController(
+      text: place?.entranceFloorNumber?.toString() ?? '',
+    );
+    _elevatorRideCountController = TextEditingController(
+      text: place?.elevatorRideCount?.toString() ?? '',
+    );
     _latController = TextEditingController(text: place?.lat.toString() ?? '');
     _lngController = TextEditingController(text: place?.lng.toString() ?? '');
+    _routeDistanceController = TextEditingController(
+      text: widget.existingRecord?.routeDistanceMeters.toStringAsFixed(0) ?? '',
+    );
     _categoryController = TextEditingController(text: place?.category ?? '');
     _menuController = TextEditingController(
       text: widget.existingRecord?.menu ?? '',
@@ -1853,6 +2633,13 @@ class _RecordSheetState extends State<_RecordSheet> {
     );
     _dineType = widget.existingRecord?.dineType ?? DineType.dineIn;
     _visitedAt = widget.existingRecord?.visitedAt ?? DateTime.now();
+    _hasElevator = place?.hasElevator ?? true;
+
+    final straightDistance = _estimatedStraightLineDistanceMeters;
+    if (_routeDistanceController.text.trim().isEmpty &&
+        straightDistance != null) {
+      _routeDistanceController.text = straightDistance.toStringAsFixed(0);
+    }
   }
 
   @override
@@ -1862,8 +2649,12 @@ class _RecordSheetState extends State<_RecordSheet> {
     _buildingController.dispose();
     _floorLabelController.dispose();
     _floorNumberController.dispose();
+    _entranceFloorLabelController.dispose();
+    _entranceFloorNumberController.dispose();
+    _elevatorRideCountController.dispose();
     _latController.dispose();
     _lngController.dispose();
+    _routeDistanceController.dispose();
     _categoryController.dispose();
     _menuController.dispose();
     _priceController.dispose();
@@ -1871,6 +2662,21 @@ class _RecordSheetState extends State<_RecordSheet> {
     _memoController.dispose();
     _timeLimitController.dispose();
     super.dispose();
+  }
+
+  double? get _estimatedStraightLineDistanceMeters {
+    final base = widget.controller.baseLocation;
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    if (base == null || lat == null || lng == null) {
+      return null;
+    }
+    return calculateDistanceMeters(
+      startLat: base.lat,
+      startLng: base.lng,
+      endLat: lat,
+      endLng: lng,
+    );
   }
 
   @override
@@ -1930,7 +2736,7 @@ class _RecordSheetState extends State<_RecordSheet> {
                   Expanded(
                     child: TextFormField(
                       controller: _floorLabelController,
-                      decoration: const InputDecoration(labelText: '階数ラベル'),
+                      decoration: const InputDecoration(labelText: '目的フロア(任意)'),
                       onChanged: (value) {
                         final parsed = parseFloorNumber(value);
                         if (parsed != null &&
@@ -1947,11 +2753,83 @@ class _RecordSheetState extends State<_RecordSheet> {
                       keyboardType: const TextInputType.numberWithOptions(
                         signed: true,
                       ),
-                      decoration: const InputDecoration(labelText: '数値階'),
+                      decoration: const InputDecoration(labelText: '目的階(数値)'),
                     ),
                   ),
                 ],
               ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _entranceFloorLabelController,
+                      decoration: const InputDecoration(labelText: '入口フロア(任意)'),
+                      onChanged: (value) {
+                        final parsed = parseFloorNumber(value);
+                        if (parsed != null &&
+                            _entranceFloorNumberController.text
+                                .trim()
+                                .isEmpty) {
+                          _entranceFloorNumberController.text = '$parsed';
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _entranceFloorNumberController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        signed: true,
+                      ),
+                      decoration: const InputDecoration(labelText: '入口階(数値)'),
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _routeDistanceController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: '最短距離(m, 任意)',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: const InputDecoration(labelText: '直線距離(m)'),
+                      child: Text(
+                        _estimatedStraightLineDistanceMeters == null
+                            ? '-'
+                            : _estimatedStraightLineDistanceMeters!
+                                  .toStringAsFixed(0),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('店舗側にエレベータあり'),
+                subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
+                value: _hasElevator,
+                onChanged: (value) => setState(() => _hasElevator = value),
+              ),
+              if (_hasElevator)
+                TextFormField(
+                  controller: _elevatorRideCountController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'エレベータ乗車回数(任意)',
+                    hintText: '例: 1, 2',
+                  ),
+                ),
               Row(
                 children: [
                   Expanded(
@@ -2096,6 +2974,10 @@ class _RecordSheetState extends State<_RecordSheet> {
     final floorNumber = explicitFloor.isEmpty
         ? parseFloorNumber(_floorLabelController.text)
         : int.tryParse(explicitFloor);
+    final explicitEntranceFloor = _entranceFloorNumberController.text.trim();
+    final entranceFloorNumber = explicitEntranceFloor.isEmpty
+        ? parseFloorNumber(_entranceFloorLabelController.text)
+        : int.tryParse(explicitEntranceFloor);
     final place = Place(
       id:
           widget.initialPlace?.id ??
@@ -2111,6 +2993,10 @@ class _RecordSheetState extends State<_RecordSheet> {
       buildingName: _buildingController.text.trim(),
       floorLabel: _floorLabelController.text.trim(),
       floorNumber: floorNumber,
+      entranceFloorLabel: _entranceFloorLabelController.text.trim(),
+      entranceFloorNumber: entranceFloorNumber,
+      hasElevator: _hasElevator,
+      elevatorRideCount: int.tryParse(_elevatorRideCountController.text.trim()),
       category: _categoryController.text.trim(),
       rawPayload:
           widget.initialPlace?.rawPayload ?? jsonEncode({'source': 'manual'}),
@@ -2118,6 +3004,9 @@ class _RecordSheetState extends State<_RecordSheet> {
     await widget.controller.saveRecord(
       recordId: widget.existingRecord?.id,
       place: place,
+      routeDistanceMeters: double.tryParse(
+        _routeDistanceController.text.trim(),
+      ),
       visitedAt: _visitedAt,
       timeLimitMinutes: int.parse(_timeLimitController.text.trim()),
       dineType: _dineType,
@@ -2172,15 +3061,15 @@ class _RecordsTab extends StatelessWidget {
       children: [
         _SectionCard(
           title: 'Best',
-          subtitle: '実距離と難易度を分離し、両方の納得感を確認できます。',
+          subtitle: '直線距離、最短距離、縦移動を分けて、移動の重さを見返せます。',
           child: Column(
             spacing: 12,
             children: [
               _BestRecordTile(
-                label: 'Longest distance',
+                label: 'Longest route',
                 record: controller.bestDistanceRecord,
                 metricBuilder: (record) =>
-                    '${record.horizontalDistanceMeters.round()} m',
+                    '${record.routeDistanceMeters.round()}m',
               ),
               _BestRecordTile(
                 label: 'Highest difficulty',
@@ -2198,7 +3087,7 @@ class _RecordsTab extends StatelessWidget {
         const SizedBox(height: 16),
         _SectionCard(
           title: 'History',
-          subtitle: 'scoreVersion を保存し、後から再計算可能な前提で一覧化しています。',
+          subtitle: '直線距離、最短距離、縦移動を分けて残し、後から評価を見直せます。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 16,
@@ -2238,7 +3127,7 @@ class _RecordsTab extends StatelessWidget {
                 children: RecordSort.values.map((sort) {
                   final label = switch (sort) {
                     RecordSort.latest => '最新順',
-                    RecordSort.distance => '距離順',
+                    RecordSort.distance => '最短距離順',
                     RecordSort.difficulty => '難易度順',
                   };
                   return ChoiceChip(
@@ -2324,16 +3213,32 @@ class _RecordTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _Tag(label: '${record.horizontalDistanceMeters.round()} m'),
+                _Tag(label: 'route ${record.routeDistanceMeters.round()}m'),
+                _Tag(
+                  label:
+                      'straight ${record.straightLineDistanceMeters.round()}m',
+                ),
+                _Tag(
+                  label:
+                      'vertical ${record.baseVerticalFloors + record.placeVerticalFloors}F',
+                ),
                 _Tag(
                   label: 'score ${record.difficultyScore.toStringAsFixed(0)}',
                 ),
                 if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
+                if (place.entranceFloorLabel.isNotEmpty)
+                  _Tag(label: 'entry ${place.entranceFloorLabel}'),
+                _Tag(label: place.hasElevator ? 'EVあり' : '階段中心'),
+                if (place.hasElevator && place.elevatorRideCount != null)
+                  _Tag(label: 'EV ${place.elevatorRideCount}回'),
                 _Tag(
                   label: record.dineType == DineType.dineIn ? '店内飲食' : 'テイクアウト',
                 ),
                 _Tag(label: 'v${record.scoreVersion}'),
               ],
+            ),
+            Text(
+              '拠点縦移動 ${record.baseVerticalFloors}F / 店舗縦移動 ${record.placeVerticalFloors}F',
             ),
             if (record.menu.isNotEmpty) Text('Menu: ${record.menu}'),
             if (record.price != null) Text('Price: ${record.price}'),

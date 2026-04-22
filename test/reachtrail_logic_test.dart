@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:reachtrail_app/models/lunch_challenge_record.dart';
 import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/place.dart';
@@ -28,18 +30,43 @@ void main() {
 
   test('difficulty score reflects floor and dine type', () {
     final dineIn = calculateDifficultyScore(
-      horizontalDistanceMeters: 500,
-      floorNumber: 10,
+      routeDistanceMeters: 500,
+      baseVerticalFloors: 3,
+      placeVerticalFloors: 7,
+      baseHasElevator: false,
+      placeHasElevator: false,
       dineType: DineType.dineIn,
     );
     final takeout = calculateDifficultyScore(
-      horizontalDistanceMeters: 500,
-      floorNumber: 10,
+      routeDistanceMeters: 500,
+      baseVerticalFloors: 3,
+      placeVerticalFloors: 7,
+      baseHasElevator: false,
+      placeHasElevator: false,
       dineType: DineType.takeout,
     );
 
     expect(dineIn, greaterThan(takeout));
     expect(dineIn, 900);
+  });
+
+  test('vertical floor travel uses entry floor as boundary', () {
+    expect(
+      calculateVerticalFloorTravel(
+        startFloorNumber: 26,
+        entryFloorNumber: 2,
+        destinationFloorNumber: null,
+      ),
+      24,
+    );
+    expect(
+      calculateVerticalFloorTravel(
+        startFloorNumber: null,
+        entryFloorNumber: 1,
+        destinationFloorNumber: 32,
+      ),
+      31,
+    );
   });
 
   test('record copyWith can update score fields', () {
@@ -68,18 +95,21 @@ void main() {
       price: 1000,
       paymentMethod: 'Card',
       memo: '',
-      horizontalDistanceMeters: 500,
+      straightLineDistanceMeters: 480,
+      routeDistanceMeters: 500,
+      baseVerticalFloors: 24,
+      placeVerticalFloors: 31,
       difficultyScore: 900,
-      scoreVersion: 1,
+      scoreVersion: 2,
     );
 
     final updated = record.copyWith(
-      horizontalDistanceMeters: 650,
+      routeDistanceMeters: 650,
       difficultyScore: 1050,
       scoreVersion: 2,
     );
 
-    expect(updated.horizontalDistanceMeters, 650);
+    expect(updated.routeDistanceMeters, 650);
     expect(updated.difficultyScore, 1050);
     expect(updated.scoreVersion, 2);
     expect(updated.menu, 'Lunch');
@@ -227,4 +257,78 @@ void main() {
     expect(collapsed.first.buildingName, '住友不動産新宿オークタワー');
     expect(collapsed.first.category, 'BaseLocation');
   });
+
+  test(
+    'yahoo search retries without distance limit when nearby search is empty',
+    () async {
+      const base = BaseLocation(
+        id: 'base',
+        name: 'Office',
+        lat: 35.6895,
+        lng: 139.6917,
+      );
+      final requestedUris = <Uri>[];
+      final client = MockClient((request) async {
+        requestedUris.add(request.url);
+
+        final isNearbySearch = request.url.queryParameters.containsKey('dist');
+        final body = isNearbySearch
+            ? '{"Feature":[]}'
+            : '''
+{
+  "Feature": [
+    {
+      "Name": "マロリーポークステーキ 新宿店",
+      "Geometry": {"Coordinates": "139.7000,35.6900"},
+      "Property": {
+        "Address": "東京都新宿区西新宿1-1-1",
+        "Genre": [{"Name": "ステーキ"}]
+      },
+      "Gid": "mallory-shinjuku"
+    }
+  ]
+}
+''';
+
+        return http.Response(
+          body,
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+
+      final results = await YahooLocalSearchService(
+        'dummy',
+        proxyBaseUrl: 'https://example.com/yahoo/localSearch',
+        client: client,
+      ).search(query: 'マロリーポークステーキ', baseLocation: base, nearbyOnly: true);
+
+      expect(requestedUris, hasLength(2));
+      expect(requestedUris.first.queryParameters['dist'], isNotNull);
+      expect(requestedUris.last.queryParameters['dist'], isNull);
+      expect(results, hasLength(1));
+      expect(results.first.name, 'マロリーポークステーキ 新宿店');
+    },
+  );
+
+  test(
+    'composite yahoo search returns empty instead of mock fallback',
+    () async {
+      final client = MockClient(
+        (_) async => http.Response(
+          '{"Feature":[]}',
+          200,
+          headers: {'content-type': 'application/json'},
+        ),
+      );
+
+      final results = await YahooLocalSearchService(
+        'dummy',
+        proxyBaseUrl: 'https://example.com/yahoo/localSearch',
+        client: client,
+      ).search(query: '存在しない店', baseLocation: null, nearbyOnly: false);
+
+      expect(results, isEmpty);
+    },
+  );
 }

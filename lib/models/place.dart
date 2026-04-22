@@ -10,6 +10,10 @@ class Place {
     this.buildingName = '',
     this.floorLabel = '',
     this.floorNumber,
+    this.entranceFloorLabel = '',
+    this.entranceFloorNumber,
+    this.hasElevator = true,
+    this.elevatorRideCount,
     this.category = '',
     this.rawPayload = '',
   });
@@ -24,6 +28,10 @@ class Place {
   final String buildingName;
   final String floorLabel;
   final int? floorNumber;
+  final String entranceFloorLabel;
+  final int? entranceFloorNumber;
+  final bool hasElevator;
+  final int? elevatorRideCount;
   final String category;
   final String rawPayload;
 
@@ -39,6 +47,12 @@ class Place {
     String? floorLabel,
     int? floorNumber,
     bool clearFloorNumber = false,
+    String? entranceFloorLabel,
+    int? entranceFloorNumber,
+    bool clearEntranceFloorNumber = false,
+    bool? hasElevator,
+    int? elevatorRideCount,
+    bool clearElevatorRideCount = false,
     String? category,
     String? rawPayload,
   }) {
@@ -53,6 +67,14 @@ class Place {
       buildingName: buildingName ?? this.buildingName,
       floorLabel: floorLabel ?? this.floorLabel,
       floorNumber: clearFloorNumber ? null : floorNumber ?? this.floorNumber,
+      entranceFloorLabel: entranceFloorLabel ?? this.entranceFloorLabel,
+      entranceFloorNumber: clearEntranceFloorNumber
+          ? null
+          : entranceFloorNumber ?? this.entranceFloorNumber,
+      hasElevator: hasElevator ?? this.hasElevator,
+      elevatorRideCount: clearElevatorRideCount
+          ? null
+          : elevatorRideCount ?? this.elevatorRideCount,
       category: category ?? this.category,
       rawPayload: rawPayload ?? this.rawPayload,
     );
@@ -70,6 +92,10 @@ class Place {
       'buildingName': buildingName,
       'floorLabel': floorLabel,
       'floorNumber': floorNumber,
+      'entranceFloorLabel': entranceFloorLabel,
+      'entranceFloorNumber': entranceFloorNumber,
+      'hasElevator': hasElevator,
+      'elevatorRideCount': elevatorRideCount,
       'category': category,
       'rawPayload': rawPayload,
     };
@@ -87,6 +113,10 @@ class Place {
       buildingName: (json['buildingName'] as String?) ?? '',
       floorLabel: (json['floorLabel'] as String?) ?? '',
       floorNumber: (json['floorNumber'] as num?)?.toInt(),
+      entranceFloorLabel: (json['entranceFloorLabel'] as String?) ?? '',
+      entranceFloorNumber: (json['entranceFloorNumber'] as num?)?.toInt(),
+      hasElevator: (json['hasElevator'] as bool?) ?? true,
+      elevatorRideCount: (json['elevatorRideCount'] as num?)?.toInt(),
       category: (json['category'] as String?) ?? '',
       rawPayload: (json['rawPayload'] as String?) ?? '',
     );
