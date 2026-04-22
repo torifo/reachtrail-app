@@ -610,7 +610,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _searchController;
   late final TextEditingController _nameController;
   late final TextEditingController _floorController;
-  late final TextEditingController _floorNumberController;
   late final TextEditingController _entryFloorController;
   late final TextEditingController _entryFloorNumberController;
   late final TextEditingController _elevatorRideCountController;
@@ -628,9 +627,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _searchController = TextEditingController();
     _nameController = TextEditingController(text: base?.name ?? 'Office');
     _floorController = TextEditingController(text: base?.floorLabel ?? '');
-    _floorNumberController = TextEditingController(
-      text: base?.floorNumber?.toString() ?? '',
-    );
     _entryFloorController = TextEditingController(
       text: base?.entryFloorLabel ?? '',
     );
@@ -651,7 +647,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _searchController.dispose();
     _nameController.dispose();
     _floorController.dispose();
-    _floorNumberController.dispose();
     _entryFloorController.dispose();
     _entryFloorNumberController.dispose();
     _elevatorRideCountController.dispose();
@@ -718,36 +713,13 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   validator: (value) =>
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _floorController,
-                        decoration: const InputDecoration(
-                          labelText: '拠点フロア(任意)',
-                          hintText: '例: 26F',
-                          prefixIcon: Icon(Icons.business_center_outlined),
-                        ),
-                        onChanged: (value) {
-                          final parsed = parseFloorNumber(value);
-                          if (parsed != null &&
-                              _floorNumberController.text.trim().isEmpty) {
-                            _floorNumberController.text = '$parsed';
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _floorNumberController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          signed: true,
-                        ),
-                        decoration: const InputDecoration(labelText: '拠点階(数値)'),
-                      ),
-                    ),
-                  ],
+                TextFormField(
+                  controller: _floorController,
+                  decoration: const InputDecoration(
+                    labelText: '拠点フロア(任意)',
+                    hintText: '例: 26F',
+                    prefixIcon: Icon(Icons.business_center_outlined),
+                  ),
                 ),
                 Row(
                   children: [
@@ -828,8 +800,8 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                         lat: _selectedLat!,
                         lng: _selectedLng!,
                         floorLabel: _floorController.text.trim(),
-                        floorNumber: int.tryParse(
-                          _floorNumberController.text.trim(),
+                        floorNumber: parseFloorNumber(
+                          _floorController.text.trim(),
                         ),
                         entryFloorLabel: _entryFloorController.text.trim(),
                         entryFloorNumber: int.tryParse(
@@ -930,7 +902,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
           ? place.buildingName
           : place.name;
       _floorController.text = place.floorLabel;
-      _floorNumberController.text = place.floorNumber?.toString() ?? '';
       _entryFloorController.text = '';
       _entryFloorNumberController.text = '';
       _elevatorRideCountController.text = '';
