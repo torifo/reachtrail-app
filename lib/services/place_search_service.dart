@@ -58,22 +58,15 @@ class CompositePlaceSearchService implements PlaceSearchService {
     if (provider == 'yahoo' &&
         (_config.yahooApiKey.isNotEmpty ||
             _config.yahooProxyBaseUrl.isNotEmpty)) {
-      try {
-        final remote = await YahooLocalSearchService(
-          _config.yahooApiKey,
-          proxyBaseUrl: _config.yahooProxyBaseUrl,
-        ).search(
-              query: normalized,
-              baseLocation: baseLocation,
-              nearbyOnly: nearbyOnly,
-              purpose: purpose,
-            );
-        if (remote.isNotEmpty) {
-          return remote;
-        }
-      } catch (_) {
-        // Fall back to local sample data so registration can continue.
-      }
+      return YahooLocalSearchService(
+        _config.yahooApiKey,
+        proxyBaseUrl: _config.yahooProxyBaseUrl,
+      ).search(
+        query: normalized,
+        baseLocation: baseLocation,
+        nearbyOnly: nearbyOnly,
+        purpose: purpose,
+      );
     }
 
     return MockPlaceSearchService().search(
@@ -180,10 +173,15 @@ class MockPlaceSearchService implements PlaceSearchService {
 }
 
 class YahooLocalSearchService implements PlaceSearchService {
-  YahooLocalSearchService(this._apiKey, {this.proxyBaseUrl = ''});
+  YahooLocalSearchService(
+    this._apiKey, {
+    this.proxyBaseUrl = '',
+    http.Client? client,
+  }) : _client = client ?? http.Client();
 
   final String _apiKey;
   final String proxyBaseUrl;
+  final http.Client _client;
 
   @override
   Future<List<Place>> search({
@@ -209,6 +207,31 @@ class YahooLocalSearchService implements PlaceSearchService {
       purpose: purpose,
       query: query,
     );
+
+    if (_shouldRetryBroaderYahooSearch(
+      baseLocation: baseLocation,
+      nearbyOnly: nearbyOnly,
+      purpose: purpose,
+      ranked: ranked,
+    )) {
+      final broaderPlaces = <Place>[];
+      for (final variant in _queryVariants(query, purpose)) {
+        final places = await _searchSingleQuery(
+          query: variant,
+          baseLocation: baseLocation,
+          nearbyOnly: false,
+        );
+        broaderPlaces.addAll(places);
+      }
+
+      ranked = rankPlaces(
+        places: broaderPlaces,
+        baseLocation: baseLocation,
+        deduplicate: true,
+        purpose: purpose,
+        query: query,
+      );
+    }
 
     if (purpose == SearchPurpose.baseLocation) {
       ranked = _prependInferredBaseCandidate(query, ranked);
@@ -243,7 +266,7 @@ class YahooLocalSearchService implements PlaceSearchService {
         ...params,
       });
     }
-    final response = await http.get(uri);
+    final response = await _client.get(uri);
     if (response.statusCode != 200) {
       throw Exception('Yahoo API request failed: ${response.statusCode}');
     }
@@ -293,6 +316,18 @@ class YahooLocalSearchService implements PlaceSearchService {
       );
     }).toList();
   }
+}
+
+bool _shouldRetryBroaderYahooSearch({
+  required BaseLocation? baseLocation,
+  required bool nearbyOnly,
+  required SearchPurpose purpose,
+  required List<Place> ranked,
+}) {
+  return nearbyOnly &&
+      purpose == SearchPurpose.lunchPlace &&
+      baseLocation != null &&
+      ranked.isEmpty;
 }
 
 List<String> _queryVariants(String query, SearchPurpose purpose) {
