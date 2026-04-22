@@ -2,6 +2,9 @@
 
 ReachTrail の `macOS` 版は、VPS でビルドせず、ローカル Mac 上で署名付きビルドと配布物作成を行います。
 
+一般公開で Chrome や Finder から警告なく開かせるには、`Personal Team` 署名だけでは不足です。
+`Developer ID Application` 署名と notarization が必要です。
+
 ## 前提
 
 - Xcode で `macos/Runner.xcworkspace` を開けること
@@ -19,6 +22,9 @@ flutter build macos --release \
   --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
 ```
 
+この段階で理想なのは `Developer ID Application` 署名です。
+`Personal Team` 署名でもローカル実行はできますが、ダウンロード配布では Gatekeeper 警告が強く残ります。
+
 ## 2. 配布用 zip を作成
 
 ```bash
@@ -30,7 +36,19 @@ flutter build macos --release \
 - `build/macos-dist/reachtrail-macos.zip`
 - `build/macos-dist/index.html`
 
-## 3. VPS の download 配下へ同期
+## 3. notarization
+
+事前に App Store Connect の API key か Apple ID ベースの notary 認証情報を
+`xcrun notarytool store-credentials` で Keychain に保存しておきます。
+
+```bash
+./deploy/reachtrail/notarize-macos.sh
+```
+
+`Developer ID Application` 署名と notarization が通っていない zip は、
+Chrome や Finder 経由の一般配布で「開けない」状態になりやすいです。
+
+## 4. VPS の download 配下へ同期
 
 ```bash
 ./deploy/reachtrail/sync-download-to-vps.sh
@@ -41,7 +59,7 @@ flutter build macos --release \
 - `download.reachtrail.riumu.net`
 - VPS 上の配置先は `/home/ubuntu/app/reachtrail/download/`
 
-## 4. 公開確認
+## 5. 公開確認
 
 - `https://download.reachtrail.riumu.net/reachtrail-macos.zip`
 - アプリ起動後に Google ログインできること
@@ -50,5 +68,5 @@ flutter build macos --release \
 ## 補足
 
 - `.dmg` 化は将来対応でよく、MVP では `zip` 配布で十分
-- notarization や Developer ID 署名は、一般公開の配布品質を上げる段階で追加する
+- ただし `zip` でも一般公開配布には notarization が必要
 - VPS では `macOS` ビルドを行わない

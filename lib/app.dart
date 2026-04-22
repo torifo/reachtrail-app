@@ -524,6 +524,20 @@ class ReachTrailHome extends StatefulWidget {
 class _ReachTrailHomeState extends State<ReachTrailHome> {
   int _index = 0;
 
+  static const _desktopBreakpoint = 1080.0;
+  static const _contentMaxWidth = 1280.0;
+
+  Widget _buildCurrentTab(ReachTrailController controller) {
+    return IndexedStack(
+      index: _index,
+      children: [
+        _BaseLocationTab(controller: controller),
+        _RegisterTab(controller: controller),
+        _RecordsTab(controller: controller),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
@@ -531,68 +545,114 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('ReachTrail'),
-        actions: [
-          if (widget.authService.currentUser case final user?)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Center(
-                child: Text(
-                  user.displayName?.isNotEmpty == true
-                      ? user.displayName!
-                      : user.email,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth >= _desktopBreakpoint;
+        final content = _buildCurrentTab(controller);
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('ReachTrail'),
+            actions: [
+              if (widget.authService.currentUser case final user?)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    child: Text(
+                      user.displayName?.isNotEmpty == true
+                          ? user.displayName!
+                          : user.email,
+                    ),
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Center(
+                  child: Text(
+                    controller.placeSearchProvider == 'mock' ||
+                            controller.yahooApiKey.isEmpty
+                        ? 'Mock Search'
+                        : 'Yahoo',
+                  ),
                 ),
               ),
-            ),
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Center(
-              child: Text(
-                controller.placeSearchProvider == 'mock' ||
-                        controller.yahooApiKey.isEmpty
-                    ? 'Mock Search'
-                    : 'Yahoo',
+              IconButton(
+                tooltip: 'Sign out',
+                onPressed: widget.authService.signOut,
+                icon: const Icon(Icons.logout),
               ),
-            ),
+            ],
           ),
-          IconButton(
-            tooltip: 'Sign out',
-            onPressed: widget.authService.signOut,
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: IndexedStack(
-        index: _index,
-        children: [
-          _BaseLocationTab(controller: controller),
-          _RegisterTab(controller: controller),
-          _RecordsTab(controller: controller),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (value) => setState(() => _index = value),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.place_outlined),
-            selectedIcon: Icon(Icons.place),
-            label: 'Base',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.add_location_alt_outlined),
-            selectedIcon: Icon(Icons.add_location_alt),
-            label: 'Register',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.emoji_events_outlined),
-            selectedIcon: Icon(Icons.emoji_events),
-            label: 'Records',
-          ),
-        ],
-      ),
+          body: isDesktop
+              ? Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 0, 12),
+                      child: NavigationRail(
+                        selectedIndex: _index,
+                        onDestinationSelected: (value) =>
+                            setState(() => _index = value),
+                        labelType: NavigationRailLabelType.all,
+                        groupAlignment: -0.8,
+                        destinations: const [
+                          NavigationRailDestination(
+                            icon: Icon(Icons.place_outlined),
+                            selectedIcon: Icon(Icons.place),
+                            label: Text('Base'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.add_location_alt_outlined),
+                            selectedIcon: Icon(Icons.add_location_alt),
+                            label: Text('Register'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.emoji_events_outlined),
+                            selectedIcon: Icon(Icons.emoji_events),
+                            label: Text('Records'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const VerticalDivider(width: 1),
+                    Expanded(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: _contentMaxWidth,
+                          ),
+                          child: content,
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : content,
+          bottomNavigationBar: isDesktop
+              ? null
+              : NavigationBar(
+                  selectedIndex: _index,
+                  onDestinationSelected: (value) =>
+                      setState(() => _index = value),
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.place_outlined),
+                      selectedIcon: Icon(Icons.place),
+                      label: 'Base',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.add_location_alt_outlined),
+                      selectedIcon: Icon(Icons.add_location_alt),
+                      label: 'Register',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.emoji_events_outlined),
+                      selectedIcon: Icon(Icons.emoji_events),
+                      label: 'Records',
+                    ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }

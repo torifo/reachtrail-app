@@ -133,6 +133,7 @@ flutter run -d macos \
 にまとめています。
 
 `macOS` 配布手順は [docs/macos_distribution.md](/Users/akito-shoji/dev/app/reachtrail/docs/macos_distribution.md) にまとめています。
+一般公開向けには `Developer ID` 署名と notarization が必要です。
 
 ## Google ログイン
 
