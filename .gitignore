@@ -32,6 +32,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+api/.dart_tool/
+api/build/
 assets/config/.env
 assets/config/.vars
 
