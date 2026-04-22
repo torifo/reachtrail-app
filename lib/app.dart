@@ -1532,7 +1532,7 @@ class _CandidateRadar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (baseLocation == null || places.isEmpty) {
-      return const Center(child: Text('基準地点と候補があるとレーダー表示できます。'));
+      return const Center(child: Text('基準地点と候補があるとレーダー形式で表示されます。'));
     }
 
     final selectedPlace = places
