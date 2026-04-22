@@ -1801,7 +1801,7 @@ class ReachTrailSignInScreen extends StatelessWidget {
                                       ),
                                     const SizedBox(height: 18),
                                     Text(
-                                      'メール認証は後続対応です。公開版では Google ログインを先行提供します。',
+                                      'メール認証は後続対応です。先行公開版では Google ログインのみ提供します。',
                                       style: theme.textTheme.bodySmall
                                           ?.copyWith(
                                             color: const Color(0xFF475569),
@@ -1874,7 +1874,7 @@ class _HeroPanel extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         Text(
-          '基準地点から店までの距離、階数、到達難易度をひとつの流れで記録するためのランチログ。',
+          '基準地点から店までの距離＆階数の組み合わせて到達難易度、行ったお店の一覧をまとめて記録できるランチログアプリ。',
           style: theme.textTheme.titleMedium?.copyWith(
             color: const Color(0xFF334155),
             height: 1.5,
@@ -1898,7 +1898,7 @@ class _HeroPanel extends StatelessWidget {
         const SizedBox(height: 14),
         const _HeroFeature(
           title: 'Measure',
-          description: '基準地点からの距離と階数を使って、移動の負荷を一目で確認できます。',
+          description: '基準地点からの距離と階数を使って、移動の負荷を可視化します。',
         ),
         const SizedBox(height: 14),
         const _HeroFeature(
