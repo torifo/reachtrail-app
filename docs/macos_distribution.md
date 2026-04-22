@@ -28,6 +28,7 @@ flutter build macos --release \
 生成物:
 
 - `build/macos-dist/reachtrail-macos.zip`
+- `build/macos-dist/index.html`
 
 ## 3. VPS の download 配下へ同期
 

@@ -32,7 +32,7 @@ ReachTrail の VPS 公開用メモです。
 - `reachtrail/push-api-image.sh`
   API イメージを GitHub Container Registry に push する
 - `reachtrail/package-macos.sh`
-  署名済み `macOS` app を配布用 zip にまとめる
+  署名済み `macOS` app を配布用 zip にまとめ、配布ページも出力する
 - `reachtrail/sync-download-to-vps.sh`
   `macOS` 配布物を VPS の `download` へ転送する
 

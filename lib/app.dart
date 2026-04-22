@@ -611,7 +611,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _nameController;
   late final TextEditingController _floorController;
   late final TextEditingController _entryFloorController;
-  late final TextEditingController _entryFloorNumberController;
   late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
@@ -630,9 +629,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _entryFloorController = TextEditingController(
       text: base?.entryFloorLabel ?? '',
     );
-    _entryFloorNumberController = TextEditingController(
-      text: base?.entryFloorNumber?.toString() ?? '',
-    );
     _elevatorRideCountController = TextEditingController(
       text: base?.elevatorRideCount?.toString() ?? '',
     );
@@ -648,7 +644,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _nameController.dispose();
     _floorController.dispose();
     _entryFloorController.dispose();
-    _entryFloorNumberController.dispose();
     _elevatorRideCountController.dispose();
     _memoController.dispose();
     super.dispose();
@@ -721,38 +716,13 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     prefixIcon: Icon(Icons.business_center_outlined),
                   ),
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _entryFloorController,
-                        decoration: const InputDecoration(
-                          labelText: '出入口フロア(任意)',
-                          hintText: '例: 2F, 1F, B1',
-                          prefixIcon: Icon(Icons.exit_to_app),
-                        ),
-                        onChanged: (value) {
-                          final parsed = parseFloorNumber(value);
-                          if (parsed != null &&
-                              _entryFloorNumberController.text.trim().isEmpty) {
-                            _entryFloorNumberController.text = '$parsed';
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _entryFloorNumberController,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          signed: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: '出入口階(数値)',
-                        ),
-                      ),
-                    ),
-                  ],
+                TextFormField(
+                  controller: _entryFloorController,
+                  decoration: const InputDecoration(
+                    labelText: '出入口フロア(任意)',
+                    hintText: '例: 2F, 1F, B1',
+                    prefixIcon: Icon(Icons.exit_to_app),
+                  ),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -804,8 +774,8 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                           _floorController.text.trim(),
                         ),
                         entryFloorLabel: _entryFloorController.text.trim(),
-                        entryFloorNumber: int.tryParse(
-                          _entryFloorNumberController.text.trim(),
+                        entryFloorNumber: parseFloorNumber(
+                          _entryFloorController.text.trim(),
                         ),
                         hasElevator: _hasElevator,
                         elevatorRideCount: int.tryParse(
@@ -903,7 +873,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
           : place.name;
       _floorController.text = place.floorLabel;
       _entryFloorController.text = '';
-      _entryFloorNumberController.text = '';
       _elevatorRideCountController.text = '';
       _memoController.text = place.address;
     });
@@ -1684,121 +1653,150 @@ class ReachTrailSignInScreen extends StatelessWidget {
                 colors: [Color(0x260F766E), Color(0x000F766E)],
               ),
             ),
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 960),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final compact = constraints.maxWidth < 760;
-                      return Flex(
-                        direction: compact ? Axis.vertical : Axis.horizontal,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            flex: compact ? 0 : 11,
-                            child: Padding(
-                              padding: EdgeInsets.only(
-                                right: compact ? 0 : 28,
-                                bottom: compact ? 24 : 0,
-                              ),
-                              child: _HeroPanel(theme: theme),
-                            ),
-                          ),
-                          Expanded(
-                            flex: compact ? 0 : 9,
-                            child: Card(
-                              margin: EdgeInsets.zero,
-                              child: Padding(
-                                padding: const EdgeInsets.all(28),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    Text(
-                                      'Sign In',
-                                      style: theme.textTheme.titleMedium
-                                          ?.copyWith(
-                                            letterSpacing: 0.4,
-                                            color: const Color(0xFF0F766E),
-                                            fontWeight: FontWeight.w700,
-                                          ),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, viewportConstraints) {
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: viewportConstraints.maxHeight - 48,
+                      ),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 960),
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final compact = constraints.maxWidth < 760;
+                              return Flex(
+                                direction: compact
+                                    ? Axis.vertical
+                                    : Axis.horizontal,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Expanded(
+                                    flex: compact ? 0 : 11,
+                                    child: Padding(
+                                      padding: EdgeInsets.only(
+                                        right: compact ? 0 : 28,
+                                        bottom: compact ? 24 : 0,
+                                      ),
+                                      child: _HeroPanel(theme: theme),
                                     ),
-                                    const SizedBox(height: 10),
-                                    Text(
-                                      'Google アカウントでサインインして、基準地点からの距離と階数をまとめて記録します。',
-                                      style: theme.textTheme.bodyLarge,
-                                    ),
-                                    const SizedBox(height: 24),
-                                    if (kIsWeb &&
-                                        !GoogleSignIn.instance
-                                            .supportsAuthenticate())
-                                      Center(
-                                        child: buildGoogleWebSignInButton(),
-                                      )
-                                    else
-                                      FilledButton.icon(
-                                        onPressed: authService.isSigningIn
-                                            ? null
-                                            : authService.signIn,
-                                        style: FilledButton.styleFrom(
-                                          backgroundColor: const Color(
-                                            0xFF0F766E,
-                                          ),
-                                          foregroundColor: Colors.white,
-                                          padding: const EdgeInsets.symmetric(
-                                            vertical: 18,
-                                          ),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              18,
-                                            ),
-                                          ),
-                                        ),
-                                        icon: authService.isSigningIn
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                      color: Colors.white,
+                                  ),
+                                  Expanded(
+                                    flex: compact ? 0 : 9,
+                                    child: Card(
+                                      margin: EdgeInsets.zero,
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(28),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            Text(
+                                              'Sign In',
+                                              style: theme.textTheme.titleMedium
+                                                  ?.copyWith(
+                                                    letterSpacing: 0.4,
+                                                    color: const Color(
+                                                      0xFF0F766E,
                                                     ),
-                                              )
-                                            : const Icon(Icons.login),
-                                        label: const Text('Google でサインイン'),
-                                      ),
-                                    const SizedBox(height: 18),
-                                    Text(
-                                      'メール認証は後続対応です。先行公開版では Google ログインのみ提供します。',
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: const Color(0xFF475569),
-                                          ),
-                                    ),
-                                    if (authService.errorMessage
-                                        case final message?) ...[
-                                      const SizedBox(height: 16),
-                                      Text(
-                                        message,
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(
-                                              color: theme.colorScheme.error,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
                                             ),
+                                            const SizedBox(height: 10),
+                                            Text(
+                                              'Google アカウントでサインインして、基準地点からの距離と階数をまとめて記録します。',
+                                              style: theme.textTheme.bodyLarge,
+                                            ),
+                                            const SizedBox(height: 24),
+                                            if (kIsWeb &&
+                                                !GoogleSignIn.instance
+                                                    .supportsAuthenticate())
+                                              Center(
+                                                child:
+                                                    buildGoogleWebSignInButton(),
+                                              )
+                                            else
+                                              FilledButton.icon(
+                                                onPressed:
+                                                    authService.isSigningIn
+                                                    ? null
+                                                    : authService.signIn,
+                                                style: FilledButton.styleFrom(
+                                                  backgroundColor: const Color(
+                                                    0xFF0F766E,
+                                                  ),
+                                                  foregroundColor: Colors.white,
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        vertical: 18,
+                                                      ),
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          18,
+                                                        ),
+                                                  ),
+                                                ),
+                                                icon: authService.isSigningIn
+                                                    ? const SizedBox(
+                                                        width: 16,
+                                                        height: 16,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                              strokeWidth: 2,
+                                                              color:
+                                                                  Colors.white,
+                                                            ),
+                                                      )
+                                                    : const Icon(Icons.login),
+                                                label: const Text(
+                                                  'Google でサインイン',
+                                                ),
+                                              ),
+                                            const SizedBox(height: 18),
+                                            Text(
+                                              'メール認証は後続対応です。先行公開版では Google ログインのみ提供します。',
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                    color: const Color(
+                                                      0xFF475569,
+                                                    ),
+                                                  ),
+                                            ),
+                                            if (authService.errorMessage
+                                                case final message?) ...[
+                                              const SizedBox(height: 16),
+                                              Text(
+                                                message,
+                                                style: theme
+                                                    .textTheme
+                                                    .bodyMedium
+                                                    ?.copyWith(
+                                                      color: theme
+                                                          .colorScheme
+                                                          .error,
+                                                    ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
                                       ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
                           ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ],
@@ -2541,7 +2539,6 @@ class _RecordSheetState extends State<_RecordSheet> {
   late final TextEditingController _floorLabelController;
   late final TextEditingController _floorNumberController;
   late final TextEditingController _entranceFloorLabelController;
-  late final TextEditingController _entranceFloorNumberController;
   late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _latController;
   late final TextEditingController _lngController;
@@ -2574,9 +2571,6 @@ class _RecordSheetState extends State<_RecordSheet> {
     );
     _entranceFloorLabelController = TextEditingController(
       text: place?.entranceFloorLabel ?? '',
-    );
-    _entranceFloorNumberController = TextEditingController(
-      text: place?.entranceFloorNumber?.toString() ?? '',
     );
     _elevatorRideCountController = TextEditingController(
       text: place?.elevatorRideCount?.toString() ?? '',
@@ -2621,7 +2615,6 @@ class _RecordSheetState extends State<_RecordSheet> {
     _floorLabelController.dispose();
     _floorNumberController.dispose();
     _entranceFloorLabelController.dispose();
-    _entranceFloorNumberController.dispose();
     _elevatorRideCountController.dispose();
     _latController.dispose();
     _lngController.dispose();
@@ -2729,34 +2722,9 @@ class _RecordSheetState extends State<_RecordSheet> {
                   ),
                 ],
               ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _entranceFloorLabelController,
-                      decoration: const InputDecoration(labelText: '入口フロア(任意)'),
-                      onChanged: (value) {
-                        final parsed = parseFloorNumber(value);
-                        if (parsed != null &&
-                            _entranceFloorNumberController.text
-                                .trim()
-                                .isEmpty) {
-                          _entranceFloorNumberController.text = '$parsed';
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _entranceFloorNumberController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        signed: true,
-                      ),
-                      decoration: const InputDecoration(labelText: '入口階(数値)'),
-                    ),
-                  ),
-                ],
+              TextFormField(
+                controller: _entranceFloorLabelController,
+                decoration: const InputDecoration(labelText: '入口フロア(任意)'),
               ),
               Row(
                 children: [
@@ -2945,10 +2913,9 @@ class _RecordSheetState extends State<_RecordSheet> {
     final floorNumber = explicitFloor.isEmpty
         ? parseFloorNumber(_floorLabelController.text)
         : int.tryParse(explicitFloor);
-    final explicitEntranceFloor = _entranceFloorNumberController.text.trim();
-    final entranceFloorNumber = explicitEntranceFloor.isEmpty
-        ? parseFloorNumber(_entranceFloorLabelController.text)
-        : int.tryParse(explicitEntranceFloor);
+    final entranceFloorNumber = parseFloorNumber(
+      _entranceFloorLabelController.text,
+    );
     final place = Place(
       id:
           widget.initialPlace?.id ??
