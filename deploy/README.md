@@ -31,6 +31,10 @@ ReachTrail の VPS 公開用メモです。
   `api/` から API イメージをローカルで作成する
 - `reachtrail/push-api-image.sh`
   API イメージを GitHub Container Registry に push する
+- `reachtrail/package-macos.sh`
+  署名済み `macOS` app を配布用 zip にまとめる
+- `reachtrail/sync-download-to-vps.sh`
+  `macOS` 配布物を VPS の `download` へ転送する
 
 ## VPS 側で使う配置先の想定
 
@@ -63,3 +67,8 @@ ReachTrail の VPS 公開用メモです。
 1. Flutter Web から外部 API を直接叩かない
 2. `api.reachtrail.riumu.net` に自前 API を置く
 3. `macOS` ビルドも同じ API を参照する
+
+## macOS 配布
+
+`macOS` はローカル Mac で署名付き release build を作り、zip 化して `download.reachtrail.riumu.net` へ配置します。
+詳細は [docs/macos_distribution.md](/Users/akito-shoji/dev/app/reachtrail/docs/macos_distribution.md) を参照してください。

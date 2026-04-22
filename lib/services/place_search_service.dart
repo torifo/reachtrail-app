@@ -13,6 +13,7 @@ const double walkingSearchRadiusKm =
     walkingSpeedKmh * (walkingMinutesLimit / 60);
 const double walkingSearchRadiusMeters = walkingSearchRadiusKm * 1000;
 const double rankingDistanceTieThresholdMeters = 120;
+const double dedupCoordinateThresholdMeters = 35;
 
 class SearchConfig {
   const SearchConfig({
@@ -484,10 +485,9 @@ List<Place> deduplicatePlaces(List<Place> places) {
   final winners = <String, Place>{};
 
   for (final place in places) {
-    final key = buildPlaceDedupKey(place);
+    final key = findPlaceDedupKey(place, winners) ?? buildPlaceDedupKey(place);
     final current = winners[key];
-    if (current == null ||
-        placeMetadataScore(place) > placeMetadataScore(current)) {
+    if (current == null || shouldReplaceDedupWinner(current, place)) {
       winners[key] = place;
     }
   }
@@ -495,9 +495,19 @@ List<Place> deduplicatePlaces(List<Place> places) {
   return winners.values.toList();
 }
 
+String? findPlaceDedupKey(Place place, Map<String, Place> winners) {
+  for (final entry in winners.entries) {
+    if (areLikelyDuplicatePlaces(entry.value, place)) {
+      return entry.key;
+    }
+  }
+
+  return null;
+}
+
 String buildPlaceDedupKey(Place place) {
   final normalizedName = normalizePlaceText(place.name);
-  final normalizedAddress = normalizePlaceText(place.address);
+  final normalizedAddress = normalizePlaceAddress(place.address);
   if (normalizedAddress.isNotEmpty) {
     return '$normalizedName|$normalizedAddress';
   }
@@ -507,6 +517,45 @@ String buildPlaceDedupKey(Place place) {
 
 String normalizePlaceText(String value) {
   return value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+}
+
+String normalizePlaceAddress(String value) {
+  return normalizePlaceText(
+    value
+        .replaceAll(RegExp(r'[()（）]'), '')
+        .replaceAll(RegExp(r'(?:地下)?\d+\s*階'), '')
+        .replaceAll(RegExp(r'B?\d+\s*F', caseSensitive: false), ''),
+  );
+}
+
+bool areLikelyDuplicatePlaces(Place a, Place b) {
+  if (normalizePlaceText(a.name) != normalizePlaceText(b.name)) {
+    return false;
+  }
+
+  final aAddress = normalizePlaceAddress(a.address);
+  final bAddress = normalizePlaceAddress(b.address);
+  if (aAddress.isNotEmpty && aAddress == bAddress) {
+    return true;
+  }
+
+  final distance = calculateDistanceMeters(
+    startLat: a.lat,
+    startLng: a.lng,
+    endLat: b.lat,
+    endLng: b.lng,
+  );
+  return distance <= dedupCoordinateThresholdMeters;
+}
+
+bool shouldReplaceDedupWinner(Place current, Place incoming) {
+  final currentHasFloor = hasFloorMetadata(current);
+  final incomingHasFloor = hasFloorMetadata(incoming);
+  if (incomingHasFloor != currentHasFloor) {
+    return incomingHasFloor;
+  }
+
+  return placeMetadataScore(incoming) > placeMetadataScore(current);
 }
 
 int comparePlaces(
@@ -580,8 +629,8 @@ int placeMetadataScore(Place place) {
   if (place.buildingName.trim().isNotEmpty) {
     score += 2;
   }
-  if (place.floorLabel.trim().isNotEmpty || place.floorNumber != null) {
-    score += 2;
+  if (hasFloorMetadata(place)) {
+    score += 3;
   }
   if (place.category.trim().isNotEmpty) {
     score += 1;
@@ -590,6 +639,10 @@ int placeMetadataScore(Place place) {
     score += 1;
   }
   return score;
+}
+
+bool hasFloorMetadata(Place place) {
+  return place.floorLabel.trim().isNotEmpty || place.floorNumber != null;
 }
 
 int baseLocationQueryScore(Place place, String query) {

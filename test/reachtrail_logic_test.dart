@@ -146,6 +146,38 @@ void main() {
     expect(deduplicated.first.floorLabel, '8F');
   });
 
+  test('deduplicate prefers floor metadata for nearby duplicate store', () {
+    final plain = Place(
+      id: '1',
+      provider: 'yahoo',
+      providerPlaceId: 'gid-1',
+      name: 'Sample Cafe',
+      lat: 35.0,
+      lng: 139.0,
+      address: '東京都新宿区1-1-1 Sample Building',
+      buildingName: 'Sample Building',
+      category: 'Cafe',
+    );
+    final withFloor = Place(
+      id: '2',
+      provider: 'yahoo',
+      providerPlaceId: 'gid-2',
+      name: 'Sample Cafe',
+      lat: 35.00005,
+      lng: 139.00005,
+      address: '東京都新宿区1-1-1 Sample Building 8F',
+      buildingName: 'Sample Building',
+      floorLabel: '8F',
+      floorNumber: 8,
+    );
+
+    final deduplicated = deduplicatePlaces([plain, withFloor]);
+
+    expect(deduplicated, hasLength(1));
+    expect(deduplicated.first.id, '2');
+    expect(deduplicated.first.floorLabel, '8F');
+  });
+
   test('ranking prefers closer place before richer but farther place', () {
     const base = BaseLocation(
       id: 'base',

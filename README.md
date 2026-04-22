@@ -95,6 +95,8 @@ flutter run \
 [deploy/reachtrail/compose.yml](/Users/akito-shoji/dev/app/reachtrail/deploy/reachtrail/compose.yml)
 にまとめています。
 
+`macOS` 配布手順は [docs/macos_distribution.md](/Users/akito-shoji/dev/app/reachtrail/docs/macos_distribution.md) にまとめています。
+
 ## Googleログイン
 
 現時点では `web` と `macOS` で Google ログインを有効化しています。
