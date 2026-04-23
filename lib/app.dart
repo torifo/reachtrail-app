@@ -535,6 +535,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
       children: [
         _BaseLocationTab(controller: controller),
         _RegisterTab(controller: controller),
+        _SharedPlacesTab(controller: controller),
         _RecordsTab(controller: controller),
       ],
     );
@@ -608,6 +609,11 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                             label: Text('Register'),
                           ),
                           NavigationRailDestination(
+                            icon: Icon(Icons.travel_explore_outlined),
+                            selectedIcon: Icon(Icons.travel_explore),
+                            label: Text('Shared'),
+                          ),
+                          NavigationRailDestination(
                             icon: Icon(Icons.emoji_events_outlined),
                             selectedIcon: Icon(Icons.emoji_events),
                             label: Text('Records'),
@@ -645,6 +651,11 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                       icon: Icon(Icons.add_location_alt_outlined),
                       selectedIcon: Icon(Icons.add_location_alt),
                       label: 'Register',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.travel_explore_outlined),
+                      selectedIcon: Icon(Icons.travel_explore),
+                      label: 'Shared',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.emoji_events_outlined),
@@ -2925,6 +2936,416 @@ class _RecordSaveBar extends StatelessWidget {
       ],
     );
   }
+}
+
+class _SharedPlacesTab extends StatefulWidget {
+  const _SharedPlacesTab({required this.controller});
+
+  final ReachTrailController controller;
+
+  @override
+  State<_SharedPlacesTab> createState() => _SharedPlacesTabState();
+}
+
+class _SharedPlacesTabState extends State<_SharedPlacesTab> {
+  final _mapController = MapController();
+  String? _selectedPlaceId;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = _buildSharedPlaceEntries(widget.controller);
+    final selectedEntry = entries
+        .where((entry) => entry.place.id == _selectedPlaceId)
+        .firstOrNull;
+    final effectiveSelectedId =
+        selectedEntry?.place.id ??
+        (entries.isEmpty ? null : entries.first.place.id);
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        _SectionCard(
+          title: 'Shared Map',
+          subtitle: 'ランキング対象をユーザーではなくお店に寄せ、記録済みのお店を地図とレーダーで見比べます。',
+          child: entries.isEmpty
+              ? const Text('共有地図に表示できるお店がまだありません。先に候補から記録するか、手入力で登録してください。')
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 16,
+                  children: [
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        _MetricChip(
+                          icon: Icons.storefront,
+                          label: 'Places',
+                          value: '${entries.length}',
+                        ),
+                        _MetricChip(
+                          icon: Icons.receipt_long,
+                          label: 'Records',
+                          value: '${widget.controller.records.length}',
+                        ),
+                        _MetricChip(
+                          icon: Icons.radar,
+                          label: 'View',
+                          value: 'Radar + Map',
+                        ),
+                      ],
+                    ),
+                    _SharedPlaceMapOverview(
+                      mapController: _mapController,
+                      baseLocation: widget.controller.baseLocation,
+                      entries: entries,
+                      selectedPlaceId: effectiveSelectedId,
+                      onSelectEntry: _selectEntry,
+                    ),
+                  ],
+                ),
+        ),
+        if (entries.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _SectionCard(
+            title: 'Place Ranking',
+            subtitle: '訪問回数、難易度、距離をお店単位で集約します。共有データ接続後もこの並びをベースにできます。',
+            child: Column(
+              spacing: 12,
+              children: [
+                for (var index = 0; index < entries.length; index += 1)
+                  _SharedPlaceRankTile(
+                    rank: index + 1,
+                    entry: entries[index],
+                    isSelected: effectiveSelectedId == entries[index].place.id,
+                    onTap: () => _selectEntry(entries[index]),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _selectEntry(_SharedPlaceEntry entry) {
+    setState(() {
+      _selectedPlaceId = entry.place.id;
+    });
+    _mapController.move(latlong.LatLng(entry.place.lat, entry.place.lng), 16);
+  }
+}
+
+class _SharedPlaceMapOverview extends StatelessWidget {
+  const _SharedPlaceMapOverview({
+    required this.mapController,
+    required this.baseLocation,
+    required this.entries,
+    required this.selectedPlaceId,
+    required this.onSelectEntry,
+  });
+
+  final MapController mapController;
+  final BaseLocation? baseLocation;
+  final List<_SharedPlaceEntry> entries;
+  final String? selectedPlaceId;
+  final ValueChanged<_SharedPlaceEntry> onSelectEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    final places = entries.map((entry) => entry.place).toList();
+    final selectedEntry = entries
+        .where((entry) => entry.place.id == selectedPlaceId)
+        .firstOrNull;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 12,
+      children: [
+        if (selectedEntry != null)
+          _SelectedSharedPlaceSummary(entry: selectedEntry),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 900;
+            final map = SizedBox(
+              height: wide ? 420 : 320,
+              child: _CandidateMap(
+                mapController: mapController,
+                baseLocation: baseLocation,
+                places: places,
+                selectedPlaceId: selectedPlaceId,
+                onSelectPlace: (place) => onSelectEntry(
+                  entries.firstWhere((entry) => entry.place.id == place.id),
+                ),
+              ),
+            );
+            final radar = SizedBox(
+              height: wide ? 420 : 320,
+              child: _CandidateRadar(
+                baseLocation: baseLocation,
+                places: places,
+                selectedPlaceId: selectedPlaceId,
+                onSelectPlace: (place) => onSelectEntry(
+                  entries.firstWhere((entry) => entry.place.id == place.id),
+                ),
+              ),
+            );
+
+            if (!wide) {
+              return Column(spacing: 12, children: [map, radar]);
+            }
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 3, child: map),
+                const SizedBox(width: 12),
+                Expanded(flex: 2, child: radar),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _SelectedSharedPlaceSummary extends StatelessWidget {
+  const _SelectedSharedPlaceSummary({required this.entry});
+
+  final _SharedPlaceEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFE6F6F3),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 8,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.storefront, color: Color(0xFF0F766E)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    entry.place.name,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (entry.place.address.isNotEmpty) Text(entry.place.address),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _Tag(label: '${entry.visitCount} records'),
+                _Tag(
+                  label: 'avg ${entry.averageDifficulty.toStringAsFixed(0)}',
+                ),
+                _Tag(label: 'best ${entry.bestRouteDistanceMeters.round()}m'),
+                if (entry.place.floorLabel.isNotEmpty)
+                  _Tag(label: entry.place.floorLabel),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SharedPlaceRankTile extends StatelessWidget {
+  const _SharedPlaceRankTile({
+    required this.rank,
+    required this.entry,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final int rank;
+  final _SharedPlaceEntry entry;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE6F6F3) : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected
+                ? const Color(0xFF0F766E)
+                : const Color(0xFFDED7CC),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: const Color(0xFF0F766E),
+                foregroundColor: Colors.white,
+                child: Text('$rank'),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 6,
+                  children: [
+                    Text(
+                      entry.place.name,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    if (entry.place.address.isNotEmpty)
+                      Text(
+                        entry.place.address,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _Tag(label: '${entry.visitCount} records'),
+                        _Tag(
+                          label:
+                              'avg ${entry.averageDifficulty.toStringAsFixed(0)}',
+                        ),
+                        _Tag(
+                          label:
+                              'route ${entry.bestRouteDistanceMeters.round()}m',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricChip extends StatelessWidget {
+  const _MetricChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFDED7CC)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: const Color(0xFF0F766E)),
+            const SizedBox(width: 8),
+            Text('$label: '),
+            Text(value, style: const TextStyle(fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SharedPlaceEntry {
+  const _SharedPlaceEntry({
+    required this.place,
+    required this.visitCount,
+    required this.averageDifficulty,
+    required this.bestRouteDistanceMeters,
+    required this.latestVisitedAt,
+  });
+
+  final Place place;
+  final int visitCount;
+  final double averageDifficulty;
+  final double bestRouteDistanceMeters;
+  final DateTime? latestVisitedAt;
+}
+
+List<_SharedPlaceEntry> _buildSharedPlaceEntries(
+  ReachTrailController controller,
+) {
+  final recordsByPlace = <String, List<LunchChallengeRecord>>{};
+  for (final record in controller.records) {
+    recordsByPlace.putIfAbsent(record.placeId, () => []).add(record);
+  }
+
+  final entries = <_SharedPlaceEntry>[];
+  for (final entry in recordsByPlace.entries) {
+    final records = entry.value;
+    final latest = records.reduce(
+      (a, b) => a.visitedAt.isAfter(b.visitedAt) ? a : b,
+    );
+    final place = Place.fromJson(latest.placeSnapshot);
+    final averageDifficulty =
+        records.fold<double>(0, (sum, record) => sum + record.difficultyScore) /
+        records.length;
+    final bestRouteDistance = records
+        .map((record) => record.routeDistanceMeters)
+        .reduce(math.min);
+
+    entries.add(
+      _SharedPlaceEntry(
+        place: place,
+        visitCount: records.length,
+        averageDifficulty: averageDifficulty,
+        bestRouteDistanceMeters: bestRouteDistance,
+        latestVisitedAt: latest.visitedAt,
+      ),
+    );
+  }
+
+  entries.sort((a, b) {
+    final countCompare = b.visitCount.compareTo(a.visitCount);
+    if (countCompare != 0) {
+      return countCompare;
+    }
+    final difficultyCompare = b.averageDifficulty.compareTo(
+      a.averageDifficulty,
+    );
+    if (difficultyCompare != 0) {
+      return difficultyCompare;
+    }
+    final aLatest = a.latestVisitedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final bLatest = b.latestVisitedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+    return bLatest.compareTo(aLatest);
+  });
+
+  return entries;
 }
 
 class _RecordsTab extends StatelessWidget {
