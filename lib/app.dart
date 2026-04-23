@@ -1728,25 +1728,28 @@ class ReachTrailSignInScreen extends StatelessWidget {
                           child: LayoutBuilder(
                             builder: (context, constraints) {
                               final compact = constraints.maxWidth < 760;
-                              return Flex(
-                                direction: compact
-                                    ? Axis.vertical
-                                    : Axis.horizontal,
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                mainAxisAlignment: MainAxisAlignment.center,
+                              final heroWidth = compact
+                                  ? constraints.maxWidth
+                                  : math.min(
+                                      constraints.maxWidth * 0.55,
+                                      560.0,
+                                    );
+                              final cardWidth = compact
+                                  ? constraints.maxWidth
+                                  : math.min(constraints.maxWidth * 0.4, 420.0);
+
+                              return Wrap(
+                                spacing: compact ? 0 : 28,
+                                runSpacing: 24,
+                                alignment: WrapAlignment.center,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  Expanded(
-                                    flex: compact ? 0 : 11,
-                                    child: Padding(
-                                      padding: EdgeInsets.only(
-                                        right: compact ? 0 : 28,
-                                        bottom: compact ? 24 : 0,
-                                      ),
-                                      child: _HeroPanel(theme: theme),
-                                    ),
+                                  SizedBox(
+                                    width: heroWidth,
+                                    child: _HeroPanel(theme: theme),
                                   ),
-                                  Expanded(
-                                    flex: compact ? 0 : 9,
+                                  SizedBox(
+                                    width: cardWidth,
                                     child: Card(
                                       margin: EdgeInsets.zero,
                                       child: Padding(
