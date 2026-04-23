@@ -2276,6 +2276,8 @@ class _RecordSheetState extends State<_RecordSheet> {
   DateTime _visitedAt = DateTime.now();
   bool _submitting = false;
   bool _hasElevator = true;
+  late bool _showPlaceDetails;
+  late bool _showVisitDetails;
 
   @override
   void initState() {
@@ -2322,11 +2324,22 @@ class _RecordSheetState extends State<_RecordSheet> {
     _dineType = widget.existingRecord?.dineType ?? DineType.dineIn;
     _visitedAt = widget.existingRecord?.visitedAt ?? DateTime.now();
     _hasElevator = place?.hasElevator ?? true;
+    _showPlaceDetails = place == null || widget.existingRecord != null;
+    _showVisitDetails = widget.existingRecord != null;
 
     final straightDistance = _estimatedStraightLineDistanceMeters;
     if (_routeDistanceController.text.trim().isEmpty &&
         straightDistance != null) {
       _routeDistanceController.text = straightDistance.toStringAsFixed(0);
+    }
+
+    for (final controller in [
+      _nameController,
+      _latController,
+      _lngController,
+      _timeLimitController,
+    ]) {
+      controller.addListener(_refreshRequiredStatus);
     }
   }
 
@@ -2351,6 +2364,27 @@ class _RecordSheetState extends State<_RecordSheet> {
     super.dispose();
   }
 
+  bool get _canSubmit =>
+      _required(_nameController.text) == null &&
+      _requiredDouble(_latController.text) == null &&
+      _requiredDouble(_lngController.text) == null &&
+      _requiredInt(_timeLimitController.text) == null;
+
+  List<String> get _missingRequiredLabels {
+    final labels = <String>[];
+    if (_required(_nameController.text) != null) {
+      labels.add('店舗名');
+    }
+    if (_requiredDouble(_latController.text) != null ||
+        _requiredDouble(_lngController.text) != null) {
+      labels.add('位置');
+    }
+    if (_requiredInt(_timeLimitController.text) != null) {
+      labels.add('制限時間');
+    }
+    return labels;
+  }
+
   double? get _estimatedStraightLineDistanceMeters {
     final base = widget.controller.baseLocation;
     final lat = double.tryParse(_latController.text.trim());
@@ -2369,6 +2403,7 @@ class _RecordSheetState extends State<_RecordSheet> {
   @override
   Widget build(BuildContext context) {
     final viewInsets = MediaQuery.of(context).viewInsets;
+    final missingRequiredLabels = _missingRequiredLabels;
     return Padding(
       padding: EdgeInsets.only(
         left: 20,
@@ -2384,140 +2419,28 @@ class _RecordSheetState extends State<_RecordSheet> {
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 14,
             children: [
-              Text(
-                widget.existingRecord != null
+              _RecordSheetHeader(
+                title: widget.existingRecord != null
                     ? '記録を編集'
                     : widget.initialPlace == null
                     ? '手入力で記録'
                     : '候補から記録',
-                style: Theme.of(context).textTheme.headlineSmall,
+                missingRequiredLabels: missingRequiredLabels,
               ),
               TextFormField(
                 controller: _nameController,
-                decoration: const InputDecoration(labelText: '店舗名'),
+                decoration: _fieldDecoration('店舗名', isRequired: true),
                 validator: _required,
               ),
-              TextFormField(
-                controller: _addressController,
-                decoration: const InputDecoration(labelText: '住所'),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _buildingController,
-                      decoration: const InputDecoration(labelText: '建物名'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _categoryController,
-                      decoration: const InputDecoration(labelText: 'カテゴリ'),
-                    ),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _floorLabelController,
-                      decoration: const InputDecoration(labelText: '目的フロア(任意)'),
-                      onChanged: (value) {
-                        final parsed = parseFloorNumber(value);
-                        if (parsed != null &&
-                            _floorNumberController.text.trim().isEmpty) {
-                          _floorNumberController.text = '$parsed';
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _floorNumberController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        signed: true,
-                      ),
-                      decoration: const InputDecoration(labelText: '目的階(数値)'),
-                    ),
-                  ),
-                ],
-              ),
-              TextFormField(
-                controller: _entranceFloorLabelController,
-                decoration: const InputDecoration(labelText: '入口フロア(任意)'),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _routeDistanceController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      decoration: const InputDecoration(
-                        labelText: '最短距離(m, 任意)',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: InputDecorator(
-                      decoration: const InputDecoration(labelText: '直線距離(m)'),
-                      child: Text(
-                        _estimatedStraightLineDistanceMeters == null
-                            ? '-'
-                            : _estimatedStraightLineDistanceMeters!
-                                  .toStringAsFixed(0),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('店舗側にエレベータあり'),
-                subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
-                value: _hasElevator,
-                onChanged: (value) => setState(() => _hasElevator = value),
-              ),
-              if (_hasElevator)
-                TextFormField(
-                  controller: _elevatorRideCountController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'エレベータ乗車回数(任意)',
-                    hintText: '例: 1, 2',
-                  ),
-                ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _latController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        signed: true,
-                        decimal: true,
-                      ),
-                      decoration: const InputDecoration(labelText: '緯度'),
-                      validator: _requiredDouble,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _lngController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        signed: true,
-                        decimal: true,
-                      ),
-                      decoration: const InputDecoration(labelText: '経度'),
-                      validator: _requiredDouble,
-                    ),
-                  ),
-                ],
+              _RecordSheetSection(
+                title: 'お店の詳細',
+                subtitle: _showPlaceDetails
+                    ? '位置、階数、移動負荷を確認できます。'
+                    : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
+                expanded: _showPlaceDetails,
+                onExpansionChanged: (value) =>
+                    setState(() => _showPlaceDetails = value),
+                children: [_buildPlaceDetailsFields()],
               ),
               Wrap(
                 spacing: 12,
@@ -2536,7 +2459,7 @@ class _RecordSheetState extends State<_RecordSheet> {
                     child: TextFormField(
                       controller: _timeLimitController,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '制限時間(分)'),
+                      decoration: _fieldDecoration('制限時間(分)', isRequired: true),
                       validator: _requiredInt,
                     ),
                   ),
@@ -2552,51 +2475,205 @@ class _RecordSheetState extends State<_RecordSheet> {
                   ),
                 ],
               ),
-              TextFormField(
-                controller: _menuController,
-                decoration: const InputDecoration(labelText: 'メニュー'),
+              _RecordSheetSection(
+                title: '食事メモ',
+                subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
+                expanded: _showVisitDetails,
+                onExpansionChanged: (value) =>
+                    setState(() => _showVisitDetails = value),
+                children: [_buildVisitDetailsFields()],
               ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _priceController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '価格'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _paymentController,
-                      decoration: const InputDecoration(labelText: '支払い方法'),
-                    ),
-                  ),
-                ],
-              ),
-              TextFormField(
-                controller: _memoController,
-                decoration: const InputDecoration(labelText: 'メモ'),
-                maxLines: 3,
-              ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton(
-                  onPressed: _submitting ? null : _submit,
-                  child: Text(
-                    _submitting
-                        ? '保存中...'
-                        : widget.existingRecord == null
-                        ? '保存する'
-                        : '更新する',
-                  ),
-                ),
+              _RecordSaveBar(
+                canSubmit: _canSubmit,
+                isSubmitting: _submitting,
+                isEditing: widget.existingRecord != null,
+                missingRequiredLabels: missingRequiredLabels,
+                onSubmit: _submitting || !_canSubmit ? null : _submit,
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildPlaceDetailsFields() {
+    return Column(
+      spacing: 14,
+      children: [
+        TextFormField(
+          controller: _addressController,
+          decoration: _fieldDecoration('住所'),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _buildingController,
+                decoration: _fieldDecoration('建物名'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _categoryController,
+                decoration: _fieldDecoration('カテゴリ'),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _floorLabelController,
+                decoration: _fieldDecoration('目的フロア'),
+                onChanged: (value) {
+                  final parsed = parseFloorNumber(value);
+                  if (parsed != null &&
+                      _floorNumberController.text.trim().isEmpty) {
+                    _floorNumberController.text = '$parsed';
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _floorNumberController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  signed: true,
+                ),
+                decoration: _fieldDecoration('目的階(数値)'),
+              ),
+            ),
+          ],
+        ),
+        TextFormField(
+          controller: _entranceFloorLabelController,
+          decoration: _fieldDecoration('入口フロア'),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _routeDistanceController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: _fieldDecoration('最短距離(m)'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: InputDecorator(
+                decoration: _fieldDecoration('直線距離(m)'),
+                child: Text(
+                  _estimatedStraightLineDistanceMeters == null
+                      ? '-'
+                      : _estimatedStraightLineDistanceMeters!.toStringAsFixed(
+                          0,
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('店舗側にエレベータあり'),
+          subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
+          value: _hasElevator,
+          onChanged: (value) => setState(() => _hasElevator = value),
+        ),
+        if (_hasElevator)
+          TextFormField(
+            controller: _elevatorRideCountController,
+            keyboardType: TextInputType.number,
+            decoration: _fieldDecoration('エレベータ乗車回数', hintText: '例: 1, 2'),
+          ),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _latController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  signed: true,
+                  decimal: true,
+                ),
+                decoration: _fieldDecoration('緯度', isRequired: true),
+                validator: _requiredDouble,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _lngController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  signed: true,
+                  decimal: true,
+                ),
+                decoration: _fieldDecoration('経度', isRequired: true),
+                validator: _requiredDouble,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildVisitDetailsFields() {
+    return Column(
+      spacing: 14,
+      children: [
+        TextFormField(
+          controller: _menuController,
+          decoration: _fieldDecoration('メニュー'),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _priceController,
+                keyboardType: TextInputType.number,
+                decoration: _fieldDecoration('価格'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _paymentController,
+                decoration: _fieldDecoration('支払い方法'),
+              ),
+            ),
+          ],
+        ),
+        TextFormField(
+          controller: _memoController,
+          decoration: _fieldDecoration('メモ'),
+          maxLines: 3,
+        ),
+      ],
+    );
+  }
+
+  InputDecoration _fieldDecoration(
+    String label, {
+    bool isRequired = false,
+    String? hintText,
+  }) {
+    return InputDecoration(
+      labelText: isRequired ? '$label *' : label,
+      helperText: isRequired ? '必須' : '任意',
+      hintText: hintText,
+    );
+  }
+
+  void _refreshRequiredStatus() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _pickDateTime() async {
@@ -2707,6 +2784,146 @@ class _RecordSheetState extends State<_RecordSheet> {
       return '整数で入力してください';
     }
     return null;
+  }
+}
+
+class _RecordSheetHeader extends StatelessWidget {
+  const _RecordSheetHeader({
+    required this.title,
+    required this.missingRequiredLabels,
+  });
+
+  final String title;
+  final List<String> missingRequiredLabels;
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = missingRequiredLabels.isEmpty;
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 10,
+      children: [
+        Text(title, style: theme.textTheme.headlineSmall),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: ready ? const Color(0xFFE6F6F3) : const Color(0xFFFFF7ED),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: ready ? const Color(0xFF99D8CD) : const Color(0xFFF7C58A),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  ready ? Icons.check_circle_outline : Icons.info_outline,
+                  color: ready
+                      ? const Color(0xFF0F766E)
+                      : const Color(0xFFB45309),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    ready
+                        ? '保存に必要な項目は入力済みです。任意項目は後から追記できます。'
+                        : '保存には ${missingRequiredLabels.join('・')} が必要です。',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RecordSheetSection extends StatelessWidget {
+  const _RecordSheetSection({
+    required this.title,
+    required this.subtitle,
+    required this.expanded,
+    required this.onExpansionChanged,
+    required this.children,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool expanded;
+  final ValueChanged<bool> onExpansionChanged;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFDED7CC)),
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: expanded,
+        maintainState: true,
+        onExpansionChanged: onExpansionChanged,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 14),
+        childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        children: children,
+      ),
+    );
+  }
+}
+
+class _RecordSaveBar extends StatelessWidget {
+  const _RecordSaveBar({
+    required this.canSubmit,
+    required this.isSubmitting,
+    required this.isEditing,
+    required this.missingRequiredLabels,
+    required this.onSubmit,
+  });
+
+  final bool canSubmit;
+  final bool isSubmitting;
+  final bool isEditing;
+  final List<String> missingRequiredLabels;
+  final VoidCallback? onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final helperText = canSubmit
+        ? '必須項目は入力済みです。'
+        : '未入力: ${missingRequiredLabels.join('・')}';
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            helperText,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: canSubmit
+                  ? const Color(0xFF0F766E)
+                  : const Color(0xFFB45309),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        FilledButton(
+          onPressed: onSubmit,
+          child: Text(
+            isSubmitting
+                ? '保存中...'
+                : isEditing
+                ? '更新する'
+                : '保存する',
+          ),
+        ),
+      ],
+    );
   }
 }
 
