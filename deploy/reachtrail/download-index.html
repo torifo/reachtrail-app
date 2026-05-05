@@ -46,6 +46,29 @@
         font-size: 14px;
         color: #64748b;
       }
+      .notice {
+        margin-top: 28px;
+        background: #fefce8;
+        border: 1px solid #fde047;
+        border-radius: 14px;
+        padding: 20px 24px;
+      }
+      .notice h2 {
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+      .notice ol {
+        margin: 0;
+        padding-left: 20px;
+        line-height: 1.8;
+        color: #334155;
+      }
+      .notice code {
+        background: #f1f5f9;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 13px;
+      }
     </style>
   </head>
   <body>
@@ -55,6 +78,21 @@
         <p>
           macOS 版の配布ファイルです。ダウンロード後に zip を展開してアプリを起動してください。
         </p>
+
+        <div class="notice">
+          <h2>⚠️ 初回起動に2ステップ必要です</h2>
+          <p>現在このアプリは Apple の公証（Notarization）未対応のため、初回のみ以下の手順が必要です。残念ながらこの2ステップは省略できません。</p>
+          <ol>
+            <li>zip を展開する（ダウンロードフォルダに <code>ReachTrail</code> が現れる）</li>
+            <li>ターミナルを開き、以下を実行する：<br><code>xattr -cr ~/Downloads/ReachTrail.app</code></li>
+            <li>Finder で <code>ReachTrail</code> を右クリック（または Control + クリック）→「開く」を選択する</li>
+            <li>確認ダイアログで「開く」をクリックする</li>
+          </ol>
+          <p>手順3で「開く」が表示されない場合は、一度ダブルクリックしてエラーを閉じてから「システム設定」→「プライバシーとセキュリティ」を開き、「このまま開く」をクリックしてください。</p>
+          <p><strong>なぜ省略できないか：</strong> macOS はブラウザでダウンロードしたファイルに隔離フラグを自動付与します（手順2で除去）。さらに macOS Sequoia は Apple が発行する Developer ID 署名と公証のないアプリをダブルクリックでは完全にブロックします（手順3で回避）。一括解除コマンドも macOS Sequoia で廃止されたため、この2手順が現時点での最短です。</p>
+          <p>この手順は初回のみ必要です。2回目以降は普通に起動できます。</p>
+        </div>
+
         <a class="button" href="/reachtrail-macos.zip">Download macOS ZIP</a>
         <div class="meta">File: reachtrail-macos.zip</div>
       </div>
