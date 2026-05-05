@@ -338,8 +338,6 @@ List<String> _queryVariants(String query, SearchPurpose purpose) {
   }
 
   final normalized = query
-      .replaceFirst(RegExp(r'^住友不動産'), '')
-      .replaceFirst(RegExp(r'^住友不動産株式会社'), '')
       .trim();
   if (normalized.isNotEmpty && !variants.contains(normalized)) {
     variants.add(normalized);
@@ -391,7 +389,7 @@ List<Place> _prependInferredBaseCandidate(String query, List<Place> ranked) {
     lat: first.lat,
     lng: first.lng,
     address: first.address,
-    buildingName: query.replaceFirst(RegExp(r'^住友不動産'), '').trim(),
+    buildingName: query.trim(),
     category: 'BaseLocation',
     rawPayload: jsonEncode({
       'source': 'inferred_base_location',

@@ -2271,7 +2271,6 @@ class _RecordSheetState extends State<_RecordSheet> {
   late final TextEditingController _addressController;
   late final TextEditingController _buildingController;
   late final TextEditingController _floorLabelController;
-  late final TextEditingController _floorNumberController;
   late final TextEditingController _entranceFloorLabelController;
   late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _latController;
@@ -2301,9 +2300,6 @@ class _RecordSheetState extends State<_RecordSheet> {
     );
     _floorLabelController = TextEditingController(
       text: place?.floorLabel ?? '',
-    );
-    _floorNumberController = TextEditingController(
-      text: place?.floorNumber?.toString() ?? '',
     );
     _entranceFloorLabelController = TextEditingController(
       text: place?.entranceFloorLabel ?? '',
@@ -2360,7 +2356,6 @@ class _RecordSheetState extends State<_RecordSheet> {
     _addressController.dispose();
     _buildingController.dispose();
     _floorLabelController.dispose();
-    _floorNumberController.dispose();
     _entranceFloorLabelController.dispose();
     _elevatorRideCountController.dispose();
     _latController.dispose();
@@ -2539,23 +2534,6 @@ class _RecordSheetState extends State<_RecordSheet> {
               child: TextFormField(
                 controller: _floorLabelController,
                 decoration: _fieldDecoration('目的フロア'),
-                onChanged: (value) {
-                  final parsed = parseFloorNumber(value);
-                  if (parsed != null &&
-                      _floorNumberController.text.trim().isEmpty) {
-                    _floorNumberController.text = '$parsed';
-                  }
-                },
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextFormField(
-                controller: _floorNumberController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  signed: true,
-                ),
-                decoration: _fieldDecoration('目的階(数値)'),
               ),
             ),
           ],
@@ -2720,10 +2698,7 @@ class _RecordSheetState extends State<_RecordSheet> {
       return;
     }
     setState(() => _submitting = true);
-    final explicitFloor = _floorNumberController.text.trim();
-    final floorNumber = explicitFloor.isEmpty
-        ? parseFloorNumber(_floorLabelController.text)
-        : int.tryParse(explicitFloor);
+    final floorNumber = parseFloorNumber(_floorLabelController.text);
     final entranceFloorNumber = parseFloorNumber(
       _entranceFloorLabelController.text,
     );
