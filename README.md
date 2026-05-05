@@ -131,25 +131,6 @@ flutter run -d macos \
   --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
 ```
 
-## VPS 公開メモ
-
-本番公開は `riumu.net` 配下の ReachTrail 専用サブドメインを前提にします。
-
-- Web: `app.reachtrail.riumu.net`
-- API: `api.reachtrail.riumu.net`
-- macOS 配布: `download.reachtrail.riumu.net`
-
-この VPS はホスト `nginx` ではなく Docker 上の `nginxproxy/nginx-proxy` と
-`nginxproxy/acme-companion` で 80/443 を受ける構成です。
-そのため ReachTrail も Docker コンテナを `global-proxy-network` に参加させて公開します。
-
-配備用の雛形は [deploy/README.md](/Users/akito-shoji/dev/app/reachtrail/deploy/README.md) と
-[deploy/reachtrail/compose.yml](/Users/akito-shoji/dev/app/reachtrail/deploy/reachtrail/compose.yml)
-にまとめています。
-
-`macOS` 配布手順は [docs/macos_distribution.md](/Users/akito-shoji/dev/app/reachtrail/docs/macos_distribution.md) にまとめています。
-一般公開向けには `Developer ID` 署名と notarization が必要です。
-
 ## Google ログイン
 
 現時点では `web`、`Android`、`macOS` で Google ログインを有効化しています。
