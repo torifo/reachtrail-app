@@ -535,7 +535,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
       children: [
         _BaseLocationTab(controller: controller),
         _RegisterTab(controller: controller),
-        _SharedPlacesTab(controller: controller),
+        _MapTab(controller: controller),
         _RecordsTab(controller: controller),
       ],
     );
@@ -611,7 +611,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                           NavigationRailDestination(
                             icon: Icon(Icons.travel_explore_outlined),
                             selectedIcon: Icon(Icons.travel_explore),
-                            label: Text('Shared'),
+                            label: Text('Map'),
                           ),
                           NavigationRailDestination(
                             icon: Icon(Icons.emoji_events_outlined),
@@ -655,7 +655,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                     NavigationDestination(
                       icon: Icon(Icons.travel_explore_outlined),
                       selectedIcon: Icon(Icons.travel_explore),
-                      label: 'Shared',
+                      label: 'Map',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.emoji_events_outlined),
@@ -2913,16 +2913,16 @@ class _RecordSaveBar extends StatelessWidget {
   }
 }
 
-class _SharedPlacesTab extends StatefulWidget {
-  const _SharedPlacesTab({required this.controller});
+class _MapTab extends StatefulWidget {
+  const _MapTab({required this.controller});
 
   final ReachTrailController controller;
 
   @override
-  State<_SharedPlacesTab> createState() => _SharedPlacesTabState();
+  State<_MapTab> createState() => _MapTabState();
 }
 
-class _SharedPlacesTabState extends State<_SharedPlacesTab> {
+class _MapTabState extends State<_MapTab> {
   final _mapController = MapController();
   String? _selectedPlaceId;
 
