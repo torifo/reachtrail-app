@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build/macos/Build/Products/Release"
 TEMPLATE_PATH="$ROOT_DIR/deploy/reachtrail/download-index.html"
-APP_PATH="${1:-$BUILD_DIR/reachtrail_app.app}"
+APP_PATH="${1:-$BUILD_DIR/ReachTrail.app}"
 OUTPUT_DIR="${2:-$ROOT_DIR/build/macos-dist}"
 ARCHIVE_BASENAME="${3:-reachtrail-macos}"
 ZIP_PATH="$OUTPUT_DIR/$ARCHIVE_BASENAME.zip"
