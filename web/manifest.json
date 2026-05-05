@@ -1,11 +1,11 @@
 {
-    "name": "reachtrail_app",
-    "short_name": "reachtrail_app",
+    "name": "ReachTrail",
+    "short_name": "ReachTrail",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "ReachTrail records lunch distance, floor, and difficulty from your base location.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
