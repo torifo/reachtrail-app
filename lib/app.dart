@@ -2955,22 +2955,10 @@ class _MapTabState extends State<_MapTab> {
                   spacing: 16,
                   children: [
                     _BaseLocationBanner(baseLocation: baseLocation),
-                    SegmentedButton<_MapMode>(
-                      segments: const [
-                        ButtonSegment(
-                          value: _MapMode.myMap,
-                          label: Text('マイマップ'),
-                          icon: Icon(Icons.map_outlined),
-                        ),
-                        ButtonSegment(
-                          value: _MapMode.nearby,
-                          label: Text('近くの共有'),
-                          icon: Icon(Icons.groups_outlined),
-                        ),
-                      ],
-                      selected: {_mode},
-                      onSelectionChanged: (selection) {
-                        setState(() => _mode = selection.first);
+                    _MapModeSelector(
+                      mode: _mode,
+                      onChanged: (mode) {
+                        setState(() => _mode = mode);
                       },
                     ),
                     IndexedStack(
@@ -3029,6 +3017,147 @@ class _MapTabState extends State<_MapTab> {
 }
 
 enum _MapMode { myMap, nearby }
+
+class _MapModeSelector extends StatelessWidget {
+  const _MapModeSelector({required this.mode, required this.onChanged});
+
+  final _MapMode mode;
+  final ValueChanged<_MapMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 640;
+        final tabs = [
+          _MapModeTab(
+            mode: _MapMode.myMap,
+            selectedMode: mode,
+            icon: Icons.map,
+            label: 'マイマップ',
+            description: '自分の記録',
+            onChanged: onChanged,
+          ),
+          _MapModeTab(
+            mode: _MapMode.nearby,
+            selectedMode: mode,
+            icon: Icons.groups,
+            label: '近くの共有',
+            description: '準備中',
+            onChanged: onChanged,
+          ),
+        ];
+
+        if (compact) {
+          return Column(spacing: 10, children: tabs);
+        }
+
+        return Row(
+          children: [
+            Expanded(child: tabs[0]),
+            const SizedBox(width: 12),
+            Expanded(child: tabs[1]),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _MapModeTab extends StatelessWidget {
+  const _MapModeTab({
+    required this.mode,
+    required this.selectedMode,
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.onChanged,
+  });
+
+  final _MapMode mode;
+  final _MapMode selectedMode;
+  final IconData icon;
+  final String label;
+  final String description;
+  final ValueChanged<_MapMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = mode == selectedMode;
+    final theme = Theme.of(context);
+    final color = selected ? const Color(0xFF0F766E) : const Color(0xFF475569);
+
+    return InkWell(
+      onTap: () => onChanged(mode),
+      borderRadius: BorderRadius.circular(22),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFFE6F6F3) : Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: selected ? const Color(0xFF0F766E) : const Color(0xFFDED7CC),
+            width: selected ? 1.8 : 1,
+          ),
+          boxShadow: [
+            if (selected)
+              BoxShadow(
+                color: const Color(0xFF0F766E).withValues(alpha: 0.16),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+          ],
+        ),
+        child: Row(
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: selected
+                    ? const Color(0xFF0F766E)
+                    : const Color(0xFFF8F4EA),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Icon(
+                  selected ? Icons.check_circle : icon,
+                  color: selected ? Colors.white : color,
+                  size: 24,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                spacing: 2,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    description,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: selected
+                          ? const Color(0xFF0F766E)
+                          : const Color(0xFF64748B),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _BaseLocationBanner extends StatelessWidget {
   const _BaseLocationBanner({required this.baseLocation});
