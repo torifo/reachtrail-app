@@ -49,8 +49,8 @@ class GoogleAuthService extends ChangeNotifier {
     try {
       final config = await _configService.load();
       _apiBaseUrl = config.apiBaseUrl;
-      final clientId = _resolveClientId(config);
-      if (clientId.isEmpty) {
+      final signInConfiguration = _resolveSignInConfiguration(config);
+      if (!signInConfiguration.isConfigured) {
         errorMessage = 'Google client ID is not configured for this platform.';
         isInitializing = false;
         notifyListeners();
@@ -62,7 +62,10 @@ class GoogleAuthService extends ChangeNotifier {
         onError: _handleAuthenticationError,
       );
 
-      await _signIn.initialize(clientId: clientId);
+      await _signIn.initialize(
+        clientId: signInConfiguration.clientId,
+        serverClientId: signInConfiguration.serverClientId,
+      );
       await _signIn.attemptLightweightAuthentication();
     } catch (error) {
       errorMessage = 'Google sign-in initialization failed: $error';
@@ -172,14 +175,19 @@ class GoogleAuthService extends ChangeNotifier {
     notifyListeners();
   }
 
-  String _resolveClientId(LocalConfig config) {
+  _GoogleSignInConfiguration _resolveSignInConfiguration(LocalConfig config) {
     if (kIsWeb) {
-      return config.googleWebClientId;
+      return _GoogleSignInConfiguration(clientId: config.googleWebClientId);
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return _GoogleSignInConfiguration(
+        serverClientId: config.googleWebClientId,
+      );
     }
     if (defaultTargetPlatform == TargetPlatform.macOS) {
-      return config.googleMacosClientId;
+      return _GoogleSignInConfiguration(clientId: config.googleMacosClientId);
     }
-    return '';
+    return const _GoogleSignInConfiguration();
   }
 
   String _mapGoogleError(GoogleSignInException error) {
@@ -202,4 +210,15 @@ class GoogleAuthService extends ChangeNotifier {
     _authSubscription?.cancel();
     super.dispose();
   }
+}
+
+class _GoogleSignInConfiguration {
+  const _GoogleSignInConfiguration({this.clientId, this.serverClientId});
+
+  final String? clientId;
+  final String? serverClientId;
+
+  bool get isConfigured =>
+      (clientId != null && clientId!.isNotEmpty) ||
+      (serverClientId != null && serverClientId!.isNotEmpty);
 }
