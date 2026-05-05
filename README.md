@@ -1,12 +1,16 @@
 # ReachTrail
 
 ReachTrail は、基準地点からランチ先までの距離と難易度を記録する Flutter MVP です。
+Web は MVP として問題なく利用できる状態です。
+macOS はダウンロードして使える状態です。
+Android はテスターを募っており、公開準備中です。
 
 現在の公開先:
 
 - Web: `https://app.reachtrail.riumu.net`
 - API: `https://api.reachtrail.riumu.net`
 - macOS 配布: `https://download.reachtrail.riumu.net`
+- Android: テスターを募集中
 
 ## MVPでできること
 
@@ -148,13 +152,16 @@ flutter run -d macos \
 
 ## Google ログイン
 
-現時点では `web` と `macOS` で Google ログインを有効化しています。
+現時点では `web`、`Android`、`macOS` で Google ログインを有効化しています。
 メール認証はまだ未実装です。
 
 - Web client ID:
   `823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com`
+- Android は上記の Web client ID を `serverClientId` として利用します。
 - macOS client ID:
   `823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com`
+
+`google-services.json` は不要です。
 
 `web` では Google Cloud 側の `Authorized JavaScript origins` に
 `https://app.reachtrail.riumu.net` を登録済みである必要があります。
