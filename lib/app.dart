@@ -2924,11 +2924,15 @@ class _MapTab extends StatefulWidget {
 
 class _MapTabState extends State<_MapTab> {
   final _mapController = MapController();
+  _MapMode _mode = _MapMode.myMap;
   String? _selectedPlaceId;
 
   @override
   Widget build(BuildContext context) {
-    final entries = _buildSharedPlaceEntries(widget.controller);
+    final baseLocation = widget.controller.baseLocation;
+    final entries = baseLocation == null
+        ? const <_SharedPlaceEntry>[]
+        : _buildMapEntries(widget.controller, baseLocation.id);
     final selectedEntry = entries
         .where((entry) => entry.place.id == _selectedPlaceId)
         .firstOrNull;
@@ -2940,46 +2944,60 @@ class _MapTabState extends State<_MapTab> {
       padding: const EdgeInsets.all(20),
       children: [
         _SectionCard(
-          title: 'Shared Map',
-          subtitle: 'ランキング対象をユーザーではなくお店に寄せ、記録済みのお店を地図とレーダーで見比べます。',
-          child: entries.isEmpty
-              ? const Text('共有地図に表示できるお店がまだありません。先に候補から記録するか、手入力で登録してください。')
+          title: 'Map',
+          subtitle: _mode == _MapMode.myMap
+              ? '現在の基準値で記録したお店をマップで振り返ります。'
+              : '基準値から徒歩15分圏内に登録したユーザーのお店をまとめて表示します。',
+          child: baseLocation == null
+              ? const Text('先に「Base」タブで基準値を設定してください。')
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   spacing: 16,
                   children: [
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        _MetricChip(
-                          icon: Icons.storefront,
-                          label: 'Places',
-                          value: '${entries.length}',
+                    _BaseLocationBanner(baseLocation: baseLocation),
+                    SegmentedButton<_MapMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: _MapMode.myMap,
+                          label: Text('マイマップ'),
+                          icon: Icon(Icons.map_outlined),
                         ),
-                        _MetricChip(
-                          icon: Icons.receipt_long,
-                          label: 'Records',
-                          value: '${widget.controller.records.length}',
-                        ),
-                        _MetricChip(
-                          icon: Icons.radar,
-                          label: 'View',
-                          value: 'Radar + Map',
+                        ButtonSegment(
+                          value: _MapMode.nearby,
+                          label: Text('近くの共有'),
+                          icon: Icon(Icons.groups_outlined),
                         ),
                       ],
+                      selected: {_mode},
+                      onSelectionChanged: (selection) {
+                        setState(() => _mode = selection.first);
+                      },
                     ),
-                    _SharedPlaceMapOverview(
-                      mapController: _mapController,
-                      baseLocation: widget.controller.baseLocation,
-                      entries: entries,
-                      selectedPlaceId: effectiveSelectedId,
-                      onSelectEntry: _selectEntry,
+                    IndexedStack(
+                      index: _mode.index,
+                      children: [
+                        _MyMapView(
+                          mapController: _mapController,
+                          baseLocation: baseLocation,
+                          entries: entries,
+                          selectedPlaceId: effectiveSelectedId,
+                          recordCount: widget.controller.records
+                              .where(
+                                (record) =>
+                                    record.baseLocationId == baseLocation.id,
+                              )
+                              .length,
+                          onSelectEntry: _selectEntry,
+                        ),
+                        const _NearbySharedView(),
+                      ],
                     ),
                   ],
                 ),
         ),
-        if (entries.isNotEmpty) ...[
+        if (baseLocation != null &&
+            _mode == _MapMode.myMap &&
+            entries.isNotEmpty) ...[
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Place Ranking',
@@ -3007,6 +3025,104 @@ class _MapTabState extends State<_MapTab> {
       _selectedPlaceId = entry.place.id;
     });
     _mapController.move(latlong.LatLng(entry.place.lat, entry.place.lng), 16);
+  }
+}
+
+enum _MapMode { myMap, nearby }
+
+class _BaseLocationBanner extends StatelessWidget {
+  const _BaseLocationBanner({required this.baseLocation});
+
+  final BaseLocation baseLocation;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFE6F6F3),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            const Icon(Icons.place, color: Color(0xFF0F766E)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '基準値: ${baseLocation.name}',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MyMapView extends StatelessWidget {
+  const _MyMapView({
+    required this.mapController,
+    required this.baseLocation,
+    required this.entries,
+    required this.selectedPlaceId,
+    required this.recordCount,
+    required this.onSelectEntry,
+  });
+
+  final MapController mapController;
+  final BaseLocation baseLocation;
+  final List<_SharedPlaceEntry> entries;
+  final String? selectedPlaceId;
+  final int recordCount;
+  final ValueChanged<_SharedPlaceEntry> onSelectEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const Text('この基準値でまだお店が記録されていません。「Register」タブから追加してください。');
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 16,
+      children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            _MetricChip(
+              icon: Icons.storefront,
+              label: 'Places',
+              value: '${entries.length}',
+            ),
+            _MetricChip(
+              icon: Icons.receipt_long,
+              label: 'Records',
+              value: '$recordCount',
+            ),
+            _MetricChip(icon: Icons.radar, label: 'View', value: 'Radar + Map'),
+          ],
+        ),
+        _SharedPlaceMapOverview(
+          mapController: mapController,
+          baseLocation: baseLocation,
+          entries: entries,
+          selectedPlaceId: selectedPlaceId,
+          onSelectEntry: onSelectEntry,
+        ),
+      ],
+    );
+  }
+}
+
+class _NearbySharedView extends StatelessWidget {
+  const _NearbySharedView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Text('近くの共有は準備中です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示します。');
   }
 }
 
@@ -3271,11 +3387,15 @@ class _SharedPlaceEntry {
   final DateTime? latestVisitedAt;
 }
 
-List<_SharedPlaceEntry> _buildSharedPlaceEntries(
+List<_SharedPlaceEntry> _buildMapEntries(
   ReachTrailController controller,
+  String baseLocationId,
 ) {
   final recordsByPlace = <String, List<LunchChallengeRecord>>{};
   for (final record in controller.records) {
+    if (record.baseLocationId != baseLocationId) {
+      continue;
+    }
     recordsByPlace.putIfAbsent(record.placeId, () => []).add(record);
   }
 
