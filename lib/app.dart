@@ -609,8 +609,8 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                             label: Text('Register'),
                           ),
                           NavigationRailDestination(
-                            icon: Icon(Icons.travel_explore_outlined),
-                            selectedIcon: Icon(Icons.travel_explore),
+                            icon: Icon(Icons.map_outlined),
+                            selectedIcon: Icon(Icons.map),
                             label: Text('Map'),
                           ),
                           NavigationRailDestination(
@@ -653,8 +653,8 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                       label: 'Register',
                     ),
                     NavigationDestination(
-                      icon: Icon(Icons.travel_explore_outlined),
-                      selectedIcon: Icon(Icons.travel_explore),
+                      icon: Icon(Icons.map_outlined),
+                      selectedIcon: Icon(Icons.map),
                       label: 'Map',
                     ),
                     NavigationDestination(
