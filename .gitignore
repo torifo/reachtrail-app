@@ -36,6 +36,9 @@ api/.dart_tool/
 api/build/
 assets/config/.env
 assets/config/.vars
+android/key.properties
+*.jks
+*.keystore
 
 # Symbolication related
 app.*.symbols
