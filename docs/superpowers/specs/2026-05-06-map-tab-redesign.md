@@ -17,11 +17,29 @@
 
 ---
 
+## 現在の実装状況
+
+| 項目 | 状態 | 補足 |
+|------|------|------|
+| Shared -> Map のタブリネーム | 完了 | Desktop `NavigationRail` / Mobile `NavigationBar` の両方に反映 |
+| Map ナビゲーションアイコン | 完了 | `Icons.map_outlined` / `Icons.map` を使用 |
+| `_SharedPlacesTab` -> `_MapTab` | 完了 | `_MapMode { myMap, nearby }` で表示切替 |
+| マイマップ | 完了 | 現在の基準値 ID に紐づくローカル記録だけを表示 |
+| 基準値未設定時の案内 | 完了 | トグル・マップは表示しない |
+| 近くの共有 | Phase 1 placeholder まで完了 | 実データ取得は Phase 2 で対応 |
+| 本番反映 | 完了 | Web / macOS 配布物へ反映済み |
+
+Phase 2 はまだ実装しない。
+
 ## Phase 1 — タブリネーム＋マイマップ
+
+**状態: 完了**
 
 ### ナビゲーション変更
 
-`NavigationRailDestination` と `NavigationDestination` の両方で `label: Text('Shared')` → `label: Text('Map')` に変更。アイコンは現行の `Icons.travel_explore_outlined` / `Icons.travel_explore` を踏襲。
+`NavigationRailDestination` と `NavigationDestination` の両方で `Shared` → `Map` に変更。
+
+アイコンは視認性のため、`Icons.map_outlined` / `Icons.map` を使用する。
 
 ### `_SharedPlacesTab` → `_MapTab` リファクタリング
 
@@ -38,13 +56,16 @@ State は `_MapMode _mode = _MapMode.myMap`（初期値: マイマップ）と�
 ```
 Map タブ
 ├── 基準値バナー（現在の基準値名を表示、選択UIは持たない）
-├── トグル [マイマップ | 近くの共有]
+├── カード型切替 [マイマップ | 近くの共有]
 └── IndexedStack（mode に応じて切り替え）
     ├── マイマップビュー（_MyMapView）
     └── 近くの共有ビュー（_NearbySharedView）
 ```
 
 **基準値バナー**: 基準値が未設定の場合「先に「Base」タブで基準値を設定してください」と表示し、トグル・マップ非表示。
+
+**カード型切替**: `SegmentedButton` では選択状態が分かりにくかったため、`_MapModeSelector` / `_MapModeTab` に分離したカード型 UI を使用する。
+選択中は `Icons.check_circle`、濃い枠線、淡い背景、影で状態を明示する。
 
 ### `_MyMapView`
 
@@ -67,6 +88,19 @@ Phase 2 まではプレースホルダーを表示：
 ---
 
 ## Phase 2 — 近くの共有（バックエンド＋フロント）
+
+**状態: 未着手。現時点では実装しない。**
+
+Phase 2 の残作業は以下。
+
+- 共有レコードの匿名化データモデルを `api/` に追加する
+- `POST /records/sync` を追加する
+- `GET /places/nearby?lat=X&lng=Y&radius=1200` を追加する
+- `sessionToken` 認証で userId を特定する
+- フロントに `PlaceSyncService` を追加する
+- 記録保存後に fire-and-forget で同期する
+- `_NearbySharedView` を実データ取得 UI に差し替える
+- 近くの共有の空状態、エラー、再試行、ローディングを実装する
 
 ### バックエンド変更 (`api/`)
 
