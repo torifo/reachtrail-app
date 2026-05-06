@@ -185,10 +185,7 @@ class GoogleAuthService extends ChangeNotifier {
       );
     }
     if (defaultTargetPlatform == TargetPlatform.macOS) {
-      return _GoogleSignInConfiguration(
-        clientId: config.googleMacosClientId,
-        serverClientId: config.googleWebClientId,
-      );
+      return _GoogleSignInConfiguration(clientId: config.googleMacosClientId);
     }
     return const _GoogleSignInConfiguration();
   }
