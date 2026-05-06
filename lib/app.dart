@@ -209,7 +209,64 @@ class ReachTrailController extends ChangeNotifier {
     );
     await _persistence.saveBaseLocation(location);
     baseLocation = location;
+    if (records.any((record) => record.baseLocationId == location.id)) {
+      records = records
+          .map(
+            (record) => record.baseLocationId == location.id
+                ? _recalculateRecord(record, location)
+                : record,
+          )
+          .toList();
+      await _persistence.saveRecords(records);
+    }
     notifyListeners();
+  }
+
+  Future<int> deleteBaseLocation() async {
+    final currentBase = baseLocation;
+    if (currentBase == null) {
+      return 0;
+    }
+    final relatedRecordCount = records
+        .where((record) => record.baseLocationId == currentBase.id)
+        .length;
+    if (relatedRecordCount > 0) {
+      records = records
+          .where((record) => record.baseLocationId != currentBase.id)
+          .toList();
+      await _persistence.saveRecords(records);
+    }
+    places = _removeUnusedPlaces(places, records);
+    await _persistence.savePlaces(places);
+    await _persistence.deleteBaseLocation();
+    baseLocation = null;
+    baseSearchResults = const [];
+    searchResults = const [];
+    notifyListeners();
+    return relatedRecordCount;
+  }
+
+  List<Place> _removeUnusedPlaces(
+    List<Place> sourcePlaces,
+    List<LunchChallengeRecord> sourceRecords,
+  ) {
+    final usedPlaceIds = sourceRecords.map((record) => record.placeId).toSet();
+    return sourcePlaces
+        .where((place) => usedPlaceIds.contains(place.id))
+        .toList();
+  }
+
+  Future<void> _deleteUnusedPlace(String placeId) async {
+    final stillUsed = records.any((record) => record.placeId == placeId);
+    if (stillUsed) {
+      return;
+    }
+    final nextPlaces = places.where((place) => place.id != placeId).toList();
+    if (nextPlaces.length == places.length) {
+      return;
+    }
+    places = nextPlaces;
+    await _persistence.savePlaces(places);
   }
 
   Future<void> searchPlaces(String query, {required bool nearbyOnly}) async {
@@ -356,6 +413,46 @@ class ReachTrailController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> deleteRecord(String recordId) async {
+    final deleted = records
+        .where((record) => record.id == recordId)
+        .firstOrNull;
+    if (deleted == null) {
+      return;
+    }
+    final nextRecords = records
+        .where((record) => record.id != recordId)
+        .toList();
+    records = nextRecords;
+    await _persistence.saveRecords(records);
+    await _deleteUnusedPlace(deleted.placeId);
+    notifyListeners();
+  }
+
+  Future<int> deleteRecordsForPlace(
+    String placeId, {
+    String? baseLocationId,
+  }) async {
+    final before = records.length;
+    records = records.where((record) {
+      if (record.placeId != placeId) {
+        return true;
+      }
+      if (baseLocationId != null && record.baseLocationId != baseLocationId) {
+        return true;
+      }
+      return false;
+    }).toList();
+    final deletedCount = before - records.length;
+    if (deletedCount == 0) {
+      return 0;
+    }
+    await _persistence.saveRecords(records);
+    await _deleteUnusedPlace(placeId);
+    notifyListeners();
+    return deletedCount;
+  }
+
   int get outdatedScoreCount =>
       records.where((item) => item.scoreVersion != currentScoreVersion).length;
 
@@ -367,60 +464,70 @@ class ReachTrailController extends ChangeNotifier {
 
     var updatedCount = 0;
     final recalculated = records.map((record) {
-      final place = Place.fromJson(record.placeSnapshot);
-      final straightLineDistance = calculateDistanceMeters(
-        startLat: currentBase.lat,
-        startLng: currentBase.lng,
-        endLat: place.lat,
-        endLng: place.lng,
-      );
-      final baseVerticalFloors = calculateVerticalFloorTravel(
-        startFloorNumber: currentBase.floorNumber,
-        entryFloorNumber: currentBase.entryFloorNumber,
-        destinationFloorNumber: null,
-      );
-      final placeVerticalFloors = calculateVerticalFloorTravel(
-        startFloorNumber: null,
-        entryFloorNumber: place.entranceFloorNumber,
-        destinationFloorNumber: place.floorNumber,
-      );
-      final routeDistance = record.routeDistanceMeters == 0
-          ? straightLineDistance
-          : record.routeDistanceMeters;
-      final score = calculateDifficultyScore(
-        routeDistanceMeters: routeDistance,
-        baseVerticalFloors: baseVerticalFloors,
-        placeVerticalFloors: placeVerticalFloors,
-        baseHasElevator: currentBase.hasElevator,
-        placeHasElevator: place.hasElevator,
-        dineType: record.dineType,
-      );
+      final updated = _recalculateRecord(record, currentBase);
 
       final changed =
-          record.straightLineDistanceMeters != straightLineDistance ||
-          record.routeDistanceMeters != routeDistance ||
-          record.baseVerticalFloors != baseVerticalFloors ||
-          record.placeVerticalFloors != placeVerticalFloors ||
-          record.difficultyScore != score ||
-          record.scoreVersion != currentScoreVersion;
+          record.straightLineDistanceMeters !=
+              updated.straightLineDistanceMeters ||
+          record.routeDistanceMeters != updated.routeDistanceMeters ||
+          record.baseVerticalFloors != updated.baseVerticalFloors ||
+          record.placeVerticalFloors != updated.placeVerticalFloors ||
+          record.difficultyScore != updated.difficultyScore ||
+          record.scoreVersion != updated.scoreVersion;
       if (changed) {
         updatedCount += 1;
       }
 
-      return record.copyWith(
-        straightLineDistanceMeters: straightLineDistance,
-        routeDistanceMeters: routeDistance,
-        baseVerticalFloors: baseVerticalFloors,
-        placeVerticalFloors: placeVerticalFloors,
-        difficultyScore: score,
-        scoreVersion: currentScoreVersion,
-      );
+      return updated;
     }).toList();
 
     records = recalculated;
     await _persistence.saveRecords(records);
     notifyListeners();
     return updatedCount;
+  }
+
+  LunchChallengeRecord _recalculateRecord(
+    LunchChallengeRecord record,
+    BaseLocation currentBase,
+  ) {
+    final place = Place.fromJson(record.placeSnapshot);
+    final straightLineDistance = calculateDistanceMeters(
+      startLat: currentBase.lat,
+      startLng: currentBase.lng,
+      endLat: place.lat,
+      endLng: place.lng,
+    );
+    final baseVerticalFloors = calculateVerticalFloorTravel(
+      startFloorNumber: currentBase.floorNumber,
+      entryFloorNumber: currentBase.entryFloorNumber,
+      destinationFloorNumber: null,
+    );
+    final placeVerticalFloors = calculateVerticalFloorTravel(
+      startFloorNumber: null,
+      entryFloorNumber: place.entranceFloorNumber,
+      destinationFloorNumber: place.floorNumber,
+    );
+    final routeDistance = record.routeDistanceMeters == 0
+        ? straightLineDistance
+        : record.routeDistanceMeters;
+    final score = calculateDifficultyScore(
+      routeDistanceMeters: routeDistance,
+      baseVerticalFloors: baseVerticalFloors,
+      placeVerticalFloors: placeVerticalFloors,
+      baseHasElevator: currentBase.hasElevator,
+      placeHasElevator: place.hasElevator,
+      dineType: record.dineType,
+    );
+
+    return record.copyWith(
+      straightLineDistanceMeters: straightLineDistance,
+      routeDistanceMeters: routeDistance,
+      baseVerticalFloors: baseVerticalFloors,
+      placeVerticalFloors: placeVerticalFloors,
+      difficultyScore: score,
+      scoreVersion: currentScoreVersion,
+    );
   }
 
   Place _upsertPlace(Place place) {
@@ -731,7 +838,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       children: [
         _SectionCard(
           title: 'Base Location',
-          subtitle: 'Yahoo検索ベースで基準地点候補を探し、選んだ地点を拠点として保存します。',
+          subtitle: base == null
+              ? 'Yahoo検索ベースで基準地点候補を探し、選んだ地点を拠点として保存します。'
+              : '現在の基準地点を修正して保存できます。削除すると、この基準地点に紐づく登録地と記録も削除されます。',
           child: Form(
             key: _formKey,
             child: Column(
@@ -827,43 +936,57 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   ),
                 Align(
                   alignment: Alignment.centerRight,
-                  child: FilledButton(
-                    onPressed: () async {
-                      if (!_formKey.currentState!.validate()) {
-                        return;
-                      }
-                      if (_selectedLat == null || _selectedLng == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('先に基準地点候補を選んでください。')),
-                        );
-                        return;
-                      }
-                      await controller.saveBaseLocation(
-                        name: _nameController.text.trim(),
-                        lat: _selectedLat!,
-                        lng: _selectedLng!,
-                        floorLabel: _floorController.text.trim(),
-                        floorNumber: parseFloorNumber(
-                          _floorController.text.trim(),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      if (base != null)
+                        OutlinedButton.icon(
+                          onPressed: _deleteBaseLocation,
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('基準地点と関連登録地を削除'),
                         ),
-                        entryFloorLabel: _entryFloorController.text.trim(),
-                        entryFloorNumber: parseFloorNumber(
-                          _entryFloorController.text.trim(),
-                        ),
-                        hasElevator: _hasElevator,
-                        elevatorRideCount: int.tryParse(
-                          _elevatorRideCountController.text.trim(),
-                        ),
-                        memo: _memoController.text.trim(),
-                      );
-                      if (!context.mounted) {
-                        return;
-                      }
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('基準地点を保存しました。')),
-                      );
-                    },
-                    child: const Text('保存'),
+                      FilledButton(
+                        onPressed: () async {
+                          if (!_formKey.currentState!.validate()) {
+                            return;
+                          }
+                          if (_selectedLat == null || _selectedLng == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('先に基準地点候補を選んでください。'),
+                              ),
+                            );
+                            return;
+                          }
+                          await controller.saveBaseLocation(
+                            name: _nameController.text.trim(),
+                            lat: _selectedLat!,
+                            lng: _selectedLng!,
+                            floorLabel: _floorController.text.trim(),
+                            floorNumber: parseFloorNumber(
+                              _floorController.text.trim(),
+                            ),
+                            entryFloorLabel: _entryFloorController.text.trim(),
+                            entryFloorNumber: parseFloorNumber(
+                              _entryFloorController.text.trim(),
+                            ),
+                            hasElevator: _hasElevator,
+                            elevatorRideCount: int.tryParse(
+                              _elevatorRideCountController.text.trim(),
+                            ),
+                            memo: _memoController.text.trim(),
+                          );
+                          if (!context.mounted) {
+                            return;
+                          }
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('基準地点を保存しました。')),
+                          );
+                        },
+                        child: Text(base == null ? '保存' : '修正を保存'),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -912,6 +1035,8 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   value: base.elevatorRideCount?.toString() ?? '未設定',
                 ),
               if (base != null)
+                _MetricTile(label: '編集方法', value: '上のフォームを修正して「修正を保存」'),
+              if (base != null)
                 Text(
                   '座標: ${base.lat.toStringAsFixed(4)}, ${base.lng.toStringAsFixed(4)}',
                 ),
@@ -949,6 +1074,64 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _elevatorRideCountController.text = '';
       _memoController.text = place.address;
     });
+  }
+
+  Future<void> _deleteBaseLocation() async {
+    final relatedRecordCount = widget.controller.records
+        .where(
+          (record) =>
+              record.baseLocationId == widget.controller.baseLocation?.id,
+        )
+        .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('基準地点を削除しますか？'),
+        content: Text(
+          relatedRecordCount == 0
+              ? '基準地点の設定を削除します。登録地や記録がないため、関連データの削除はありません。'
+              : 'この基準地点に紐づく登録地と $relatedRecordCount 件の記録も削除します。基準地点の内容を直したいだけなら、キャンセルして上のフォームから修正保存してください。削除後は元に戻せません。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    final deletedCount = await widget.controller.deleteBaseLocation();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedCandidate = null;
+      _selectedLat = null;
+      _selectedLng = null;
+      _nameController.text = 'Office';
+      _floorController.clear();
+      _entryFloorController.clear();
+      _elevatorRideCountController.clear();
+      _memoController.clear();
+      _hasElevator = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          deletedCount == 0
+              ? '基準地点を削除しました。'
+              : '基準地点と $deletedCount 件の記録を削除しました。',
+        ),
+      ),
+    );
   }
 }
 
@@ -2976,6 +3159,8 @@ class _MapTabState extends State<_MapTab> {
                               )
                               .length,
                           onSelectEntry: _selectEntry,
+                          onEditRecord: _editRecord,
+                          onDeletePlaceRecords: _deletePlaceRecords,
                         ),
                         const _NearbySharedView(),
                       ],
@@ -3013,6 +3198,66 @@ class _MapTabState extends State<_MapTab> {
       _selectedPlaceId = entry.place.id;
     });
     _mapController.move(latlong.LatLng(entry.place.lat, entry.place.lng), 16);
+  }
+
+  Future<void> _editRecord(LunchChallengeRecord record) async {
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _RecordSheet(
+        controller: widget.controller,
+        initialPlace: Place.fromJson(record.placeSnapshot),
+        existingRecord: record,
+      ),
+    );
+    if (saved == true && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('記録を更新しました。')));
+    }
+  }
+
+  Future<void> _deletePlaceRecords(_SharedPlaceEntry entry) async {
+    final baseLocation = widget.controller.baseLocation;
+    if (baseLocation == null) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${entry.place.name} の記録を削除しますか？'),
+        content: Text('この基準地点に紐づく ${entry.visitCount} 件の記録を削除します。削除後は元に戻せません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    final deletedCount = await widget.controller.deleteRecordsForPlace(
+      entry.place.id,
+      baseLocationId: baseLocation.id,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (_selectedPlaceId == entry.place.id) {
+        _selectedPlaceId = null;
+      }
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$deletedCount 件の記録を削除しました。')));
   }
 }
 
@@ -3198,6 +3443,8 @@ class _MyMapView extends StatelessWidget {
     required this.selectedPlaceId,
     required this.recordCount,
     required this.onSelectEntry,
+    required this.onEditRecord,
+    required this.onDeletePlaceRecords,
   });
 
   final MapController mapController;
@@ -3206,6 +3453,8 @@ class _MyMapView extends StatelessWidget {
   final String? selectedPlaceId;
   final int recordCount;
   final ValueChanged<_SharedPlaceEntry> onSelectEntry;
+  final ValueChanged<LunchChallengeRecord> onEditRecord;
+  final ValueChanged<_SharedPlaceEntry> onDeletePlaceRecords;
 
   @override
   Widget build(BuildContext context) {
@@ -3240,6 +3489,8 @@ class _MyMapView extends StatelessWidget {
           entries: entries,
           selectedPlaceId: selectedPlaceId,
           onSelectEntry: onSelectEntry,
+          onEditRecord: onEditRecord,
+          onDeletePlaceRecords: onDeletePlaceRecords,
         ),
       ],
     );
@@ -3262,6 +3513,8 @@ class _SharedPlaceMapOverview extends StatelessWidget {
     required this.entries,
     required this.selectedPlaceId,
     required this.onSelectEntry,
+    required this.onEditRecord,
+    required this.onDeletePlaceRecords,
   });
 
   final MapController mapController;
@@ -3269,6 +3522,8 @@ class _SharedPlaceMapOverview extends StatelessWidget {
   final List<_SharedPlaceEntry> entries;
   final String? selectedPlaceId;
   final ValueChanged<_SharedPlaceEntry> onSelectEntry;
+  final ValueChanged<LunchChallengeRecord> onEditRecord;
+  final ValueChanged<_SharedPlaceEntry> onDeletePlaceRecords;
 
   @override
   Widget build(BuildContext context) {
@@ -3282,7 +3537,11 @@ class _SharedPlaceMapOverview extends StatelessWidget {
       spacing: 12,
       children: [
         if (selectedEntry != null)
-          _SelectedSharedPlaceSummary(entry: selectedEntry),
+          _SelectedSharedPlaceSummary(
+            entry: selectedEntry,
+            onEditLatestRecord: () => onEditRecord(selectedEntry.latestRecord),
+            onDeleteRecords: () => onDeletePlaceRecords(selectedEntry),
+          ),
         LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 900;
@@ -3330,9 +3589,15 @@ class _SharedPlaceMapOverview extends StatelessWidget {
 }
 
 class _SelectedSharedPlaceSummary extends StatelessWidget {
-  const _SelectedSharedPlaceSummary({required this.entry});
+  const _SelectedSharedPlaceSummary({
+    required this.entry,
+    required this.onEditLatestRecord,
+    required this.onDeleteRecords,
+  });
 
   final _SharedPlaceEntry entry;
+  final VoidCallback onEditLatestRecord;
+  final VoidCallback onDeleteRecords;
 
   @override
   Widget build(BuildContext context) {
@@ -3360,6 +3625,16 @@ class _SelectedSharedPlaceSummary extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
+                ),
+                IconButton(
+                  onPressed: onEditLatestRecord,
+                  icon: const Icon(Icons.edit_outlined),
+                  tooltip: '最新記録を編集',
+                ),
+                IconButton(
+                  onPressed: onDeleteRecords,
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'このお店の記録を削除',
                 ),
               ],
             ),
@@ -3507,6 +3782,7 @@ class _SharedPlaceEntry {
     required this.averageDifficulty,
     required this.bestRouteDistanceMeters,
     required this.latestVisitedAt,
+    required this.latestRecord,
   });
 
   final Place place;
@@ -3514,6 +3790,7 @@ class _SharedPlaceEntry {
   final double averageDifficulty;
   final double bestRouteDistanceMeters;
   final DateTime? latestVisitedAt;
+  final LunchChallengeRecord latestRecord;
 }
 
 List<_SharedPlaceEntry> _buildMapEntries(
@@ -3549,6 +3826,7 @@ List<_SharedPlaceEntry> _buildMapEntries(
         averageDifficulty: averageDifficulty,
         bestRouteDistanceMeters: bestRouteDistance,
         latestVisitedAt: latest.visitedAt,
+        latestRecord: latest,
       ),
     );
   }
@@ -3682,6 +3960,7 @@ class _RecordsTab extends StatelessWidget {
                         );
                       }
                     },
+                    onDelete: () => _deleteRecord(context, record),
                   ),
                 ),
             ],
@@ -3690,13 +3969,53 @@ class _RecordsTab extends StatelessWidget {
       ],
     );
   }
+
+  Future<void> _deleteRecord(
+    BuildContext context,
+    LunchChallengeRecord record,
+  ) async {
+    final place = Place.fromJson(record.placeSnapshot);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${place.name} の記録を削除しますか？'),
+        content: const Text('この記録を削除します。削除後は元に戻せません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    await controller.deleteRecord(record.id);
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('記録を削除しました。')));
+  }
 }
 
 class _RecordTile extends StatelessWidget {
-  const _RecordTile({required this.record, required this.onEdit});
+  const _RecordTile({
+    required this.record,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   final LunchChallengeRecord record;
   final Future<void> Function() onEdit;
+  final Future<void> Function() onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -3728,6 +4047,11 @@ class _RecordTile extends StatelessWidget {
                   onPressed: onEdit,
                   icon: const Icon(Icons.edit_outlined),
                   tooltip: '編集して再保存',
+                ),
+                IconButton(
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: '削除',
                 ),
               ],
             ),

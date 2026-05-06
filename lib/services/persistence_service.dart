@@ -25,6 +25,11 @@ class PersistenceService {
     await prefs.setString(_baseLocationKey, jsonEncode(location.toJson()));
   }
 
+  Future<void> deleteBaseLocation() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_baseLocationKey);
+  }
+
   Future<List<Place>> loadPlaces() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_placesKey);
