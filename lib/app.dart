@@ -1374,7 +1374,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                 onSubmitted: (_) => _runSearch(),
               ),
               SwitchListTile(
-                title: const Text('基準地点から片道徒歩1時間圏内で絞り込む'),
+                title: const Text('基準地点から片道徒歩45分圏内で絞り込む'),
                 value: _nearbyOnly,
                 onChanged: base == null
                     ? null
