@@ -69,6 +69,17 @@
         padding: 1px 6px;
         font-size: 13px;
       }
+      .download-warning {
+        margin-top: 20px;
+        background: #fff7ed;
+        border: 1px solid #fdba74;
+        border-radius: 14px;
+        padding: 18px 20px;
+      }
+      .download-warning h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+      }
     </style>
   </head>
   <body>
@@ -91,6 +102,18 @@
           <p>手順3で「開く」が表示されない場合は、一度ダブルクリックしてエラーを閉じてから「システム設定」→「プライバシーとセキュリティ」を開き、「このまま開く」をクリックしてください。</p>
           <p><strong>なぜ省略できないか：</strong> macOS はブラウザでダウンロードしたファイルに隔離フラグを自動付与します（手順2で除去）。さらに macOS Sequoia は Apple が発行する Developer ID 署名と公証のないアプリをダブルクリックでは完全にブロックします（手順3で回避）。一括解除コマンドも macOS Sequoia で廃止されたため、この2手順が現時点での最短です。</p>
           <p>この手順は初回のみ必要です。2回目以降は普通に起動できます。</p>
+        </div>
+
+        <div class="download-warning">
+          <h2>ブラウザのダウンロード警告について</h2>
+          <p>
+            Chrome などのブラウザで「不審なダウンロードをブロックしました」と表示される場合があります。
+            現在の配布ファイルは Apple の Developer ID 署名と公証に未対応のため、ブラウザ側の安全判定で警告されることがあります。
+          </p>
+          <p>
+            警告が出た場合は、ブラウザのダウンロード一覧から内容を確認し、信頼できる場合のみ保存してください。
+            一般配布向けには、今後 Developer ID 署名と公証に対応する予定です。
+          </p>
         </div>
 
         <a class="button" href="/reachtrail-macos.zip">Download macOS ZIP</a>
