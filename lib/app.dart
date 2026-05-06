@@ -789,6 +789,7 @@ class _BaseLocationTab extends StatefulWidget {
 class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _searchController;
   late final TextEditingController _nameController;
+  late final TextEditingController _addressController;
   late final TextEditingController _floorController;
   late final TextEditingController _entryFloorController;
   late final TextEditingController _elevatorRideCountController;
@@ -805,6 +806,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     final base = widget.controller.baseLocation;
     _searchController = TextEditingController();
     _nameController = TextEditingController(text: base?.name ?? 'Office');
+    _addressController = TextEditingController(text: base?.memo ?? '');
     _floorController = TextEditingController(text: base?.floorLabel ?? '');
     _entryFloorController = TextEditingController(
       text: base?.entryFloorLabel ?? '',
@@ -812,7 +814,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _elevatorRideCountController = TextEditingController(
       text: base?.elevatorRideCount?.toString() ?? '',
     );
-    _memoController = TextEditingController(text: base?.memo ?? '');
+    _memoController = TextEditingController();
     _selectedLat = base?.lat;
     _selectedLng = base?.lng;
     _hasElevator = base?.hasElevator ?? true;
@@ -822,6 +824,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   void dispose() {
     _searchController.dispose();
     _nameController.dispose();
+    _addressController.dispose();
     _floorController.dispose();
     _entryFloorController.dispose();
     _elevatorRideCountController.dispose();
@@ -854,15 +857,28 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   ),
                   onSubmitted: (_) => _runBaseSearch(),
                 ),
-                FilledButton.icon(
-                  onPressed: controller.isBaseSearching ? null : _runBaseSearch,
-                  icon: controller.isBaseSearching
-                      ? const SizedBox.square(
-                          dimension: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.search),
-                  label: const Text('基準地点を検索'),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: controller.isBaseSearching
+                          ? null
+                          : _runBaseSearch,
+                      icon: controller.isBaseSearching
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.search),
+                      label: const Text('基準地点を検索'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _useTypedAddressAsBase,
+                      icon: const Icon(Icons.edit_location_alt_outlined),
+                      label: const Text('住所を手入力で使う'),
+                    ),
+                  ],
                 ),
                 if (controller.baseSearchError != null)
                   Text(
@@ -889,6 +905,19 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   decoration: const InputDecoration(labelText: '拠点名'),
                   validator: (value) =>
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
+                ),
+                TextFormField(
+                  controller: _addressController,
+                  decoration: const InputDecoration(
+                    labelText: '住所 / 場所メモ',
+                    hintText: '例: 東京都千代田区... / 自宅周辺',
+                    prefixIcon: Icon(Icons.home_work_outlined),
+                  ),
+                ),
+                _BaseLocationPickerMap(
+                  lat: _selectedLat,
+                  lng: _selectedLng,
+                  onSelected: _selectBasePoint,
                 ),
                 TextFormField(
                   controller: _floorController,
@@ -975,7 +1004,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                             elevatorRideCount: int.tryParse(
                               _elevatorRideCountController.text.trim(),
                             ),
-                            memo: _memoController.text.trim(),
+                            memo: _mergedBaseMemo,
                           );
                           if (!context.mounted) {
                             return;
@@ -1072,8 +1101,41 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _floorController.text = place.floorLabel;
       _entryFloorController.text = '';
       _elevatorRideCountController.text = '';
-      _memoController.text = place.address;
+      _addressController.text = place.address;
     });
+  }
+
+  void _useTypedAddressAsBase() {
+    final query = _searchController.text.trim();
+    setState(() {
+      if (_nameController.text.trim().isEmpty ||
+          _nameController.text == 'Office') {
+        _nameController.text = query.isEmpty ? 'Base' : query;
+      }
+      if (_addressController.text.trim().isEmpty) {
+        _addressController.text = query;
+      }
+    });
+  }
+
+  void _selectBasePoint(latlong.LatLng point) {
+    setState(() {
+      _selectedCandidate = null;
+      _selectedLat = point.latitude;
+      _selectedLng = point.longitude;
+    });
+  }
+
+  String get _mergedBaseMemo {
+    final address = _addressController.text.trim();
+    final memo = _memoController.text.trim();
+    if (address.isEmpty) {
+      return memo;
+    }
+    if (memo.isEmpty || memo == address) {
+      return address;
+    }
+    return '$address\n$memo';
   }
 
   Future<void> _deleteBaseLocation() async {
@@ -1117,6 +1179,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _selectedLat = null;
       _selectedLng = null;
       _nameController.text = 'Office';
+      _addressController.clear();
       _floorController.clear();
       _entryFloorController.clear();
       _elevatorRideCountController.clear();
@@ -1196,6 +1259,69 @@ class _BaseCandidateTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _BaseLocationPickerMap extends StatelessWidget {
+  const _BaseLocationPickerMap({
+    required this.lat,
+    required this.lng,
+    required this.onSelected,
+  });
+
+  final double? lat;
+  final double? lng;
+  final ValueChanged<latlong.LatLng> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedPoint = lat == null || lng == null
+        ? null
+        : latlong.LatLng(lat!, lng!);
+    final center = selectedPoint ?? const latlong.LatLng(35.681236, 139.767125);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 8,
+      children: [
+        Text('地図で基準地点を選択', style: Theme.of(context).textTheme.titleSmall),
+        const Text('住所候補がうまく出ない場合は、地図をタップして緯度経度を設定できます。'),
+        SizedBox(
+          height: 260,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: FlutterMap(
+              options: MapOptions(
+                initialCenter: center,
+                initialZoom: selectedPoint == null ? 12 : 16,
+                onTap: (_, point) => onSelected(point),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'reachtrail_app',
+                ),
+                if (selectedPoint != null)
+                  MarkerLayer(
+                    markers: [
+                      Marker(
+                        point: selectedPoint,
+                        width: 120,
+                        height: 56,
+                        child: const _MapMarker(
+                          label: 'Base',
+                          color: Color(0xFF1D4ED8),
+                          isSelected: true,
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
