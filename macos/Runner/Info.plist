@@ -19,7 +19,7 @@
 			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi</string>
+				<string>com.googleusercontent.apps.823224608668-9blagvtvvuoa728q195ma5jlpeq1308a</string>
 			</array>
 		</dict>
 	</array>
@@ -32,7 +32,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>GIDClientID</key>
-	<string>823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com</string>
+	<string>823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>

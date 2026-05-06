@@ -19,7 +19,7 @@ flutter build macos --release \
   --dart-define=YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch \
   --dart-define=API_BASE_URL=https://api.reachtrail.riumu.net \
   --dart-define=GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com \
-  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
+  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
 ```
 
 この段階で理想なのは `Developer ID Application` 署名です。

@@ -73,7 +73,7 @@ class LocalConfigService {
           const String.fromEnvironment(
             'GOOGLE_MACOS_CLIENT_ID',
             defaultValue:
-                '823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com',
+                '823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com',
           ),
     );
   }

@@ -70,7 +70,7 @@ YAHOO_API_KEY=YOUR_YAHOO_API_KEY
 YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch
 API_BASE_URL=https://api.reachtrail.riumu.net
 GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com
-GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
+GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
 ```
 
 `.vars` の例:
@@ -104,7 +104,7 @@ flutter run \
   --dart-define=YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch \
   --dart-define=API_BASE_URL=https://api.reachtrail.riumu.net \
   --dart-define=GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com \
-  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
+  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
 ```
 
 `web` のローカル確認例:
@@ -117,7 +117,7 @@ flutter run -d web-server \
   --dart-define=YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch \
   --dart-define=API_BASE_URL=https://api.reachtrail.riumu.net \
   --dart-define=GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com \
-  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
+  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
 ```
 
 `macOS` のローカル確認例:
@@ -128,7 +128,7 @@ flutter run -d macos \
   --dart-define=YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch \
   --dart-define=API_BASE_URL=https://api.reachtrail.riumu.net \
   --dart-define=GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com \
-  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com
+  --dart-define=GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
 ```
 
 ## Google ログイン
@@ -140,7 +140,7 @@ flutter run -d macos \
   `823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com`
 - Android は上記の Web client ID を `serverClientId` として利用します。
 - macOS client ID:
-  `823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com`
+  `823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com`
 
 `google-services.json` は不要です。
 

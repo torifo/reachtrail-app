@@ -28,7 +28,7 @@ class ReachTrailApiConfig {
             .toSet();
     final clientIds =
         (Platform.environment['GOOGLE_ALLOWED_CLIENT_IDS'] ??
-                '823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com,823224608668-a9tomojqjsh6tsi39igs6i3kniah43oi.apps.googleusercontent.com')
+                '823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com,823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com')
             .split(',')
             .map((value) => value.trim())
             .where((value) => value.isNotEmpty)
