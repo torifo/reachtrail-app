@@ -9,6 +9,7 @@ class LocalConfig {
     required this.apiBaseUrl,
     required this.googleWebClientId,
     required this.googleMacosClientId,
+    required this.googleWindowsClientId,
   });
 
   final String placeSearchProvider;
@@ -17,6 +18,7 @@ class LocalConfig {
   final String apiBaseUrl;
   final String googleWebClientId;
   final String googleMacosClientId;
+  final String googleWindowsClientId;
 }
 
 class LocalConfigService {
@@ -74,6 +76,13 @@ class LocalConfigService {
             'GOOGLE_MACOS_CLIENT_ID',
             defaultValue:
                 '823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com',
+          ),
+      googleWindowsClientId:
+          entries['GOOGLE_WINDOWS_CLIENT_ID'] ??
+          const String.fromEnvironment(
+            'GOOGLE_WINDOWS_CLIENT_ID',
+            defaultValue:
+                '823224608668-62u7gnk85dab38e15s2ota4i6518enu0.apps.googleusercontent.com',
           ),
     );
   }

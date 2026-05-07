@@ -187,6 +187,9 @@ class GoogleAuthService extends ChangeNotifier {
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       return _GoogleSignInConfiguration(clientId: config.googleMacosClientId);
     }
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      return _GoogleSignInConfiguration(clientId: config.googleWindowsClientId);
+    }
     return const _GoogleSignInConfiguration();
   }
 
