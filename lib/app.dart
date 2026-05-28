@@ -1291,33 +1291,36 @@ class _BaseLocationPickerMap extends StatelessWidget {
           height: 260,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: center,
-                initialZoom: selectedPoint == null ? 12 : 16,
-                onTap: (_, point) => onSelected(point),
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'reachtrail_app',
+            child: _MapReloadable(
+              builder: (context) => FlutterMap(
+                options: MapOptions(
+                  initialCenter: center,
+                  initialZoom: selectedPoint == null ? 12 : 16,
+                  onTap: (_, point) => onSelected(point),
                 ),
-                if (selectedPoint != null)
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: selectedPoint,
-                        width: 120,
-                        height: 56,
-                        child: const _MapMarker(
-                          label: 'Base',
-                          color: Color(0xFF1D4ED8),
-                          isSelected: true,
-                        ),
-                      ),
-                    ],
+                children: [
+                  TileLayer(
+                    urlTemplate:
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'reachtrail_app',
                   ),
-              ],
+                  if (selectedPoint != null)
+                    MarkerLayer(
+                      markers: [
+                        Marker(
+                          point: selectedPoint,
+                          width: 120,
+                          height: 56,
+                          child: const _MapMarker(
+                            label: 'Base',
+                            color: Color(0xFF1D4ED8),
+                            isSelected: true,
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -2298,64 +2301,119 @@ class _CandidateMap extends StatelessWidget {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
-      child: FlutterMap(
-        mapController: mapController,
-        options: MapOptions(
-          initialCenter: center,
-          initialZoom: 15.5,
-          onTap: (_, point) {},
-        ),
-        children: [
-          TileLayer(
-            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            userAgentPackageName: 'reachtrail_app',
+      child: _MapReloadable(
+        builder: (context) => FlutterMap(
+          mapController: mapController,
+          options: MapOptions(
+            initialCenter: center,
+            initialZoom: 15.5,
+            onTap: (_, point) {},
           ),
-          if (baseLocation != null && selectedPlace != null)
-            PolylineLayer(
-              polylines: [
-                Polyline(
-                  points: [
-                    latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
-                    latlong.LatLng(selectedPlace.lat, selectedPlace.lng),
-                  ],
-                  strokeWidth: 4,
-                  color: const Color(0xFF0D9488),
-                  pattern: StrokePattern.dashed(segments: [10, 8]),
-                ),
-              ],
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'reachtrail_app',
             ),
-          MarkerLayer(
-            markers: [
-              if (baseLocation != null)
-                Marker(
-                  point: latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
-                  width: 120,
-                  height: 56,
-                  child: const _MapMarker(
-                    label: 'Base',
-                    color: Color(0xFF1D4ED8),
-                    isSelected: false,
+            if (baseLocation != null && selectedPlace != null)
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: [
+                      latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
+                      latlong.LatLng(selectedPlace.lat, selectedPlace.lng),
+                    ],
+                    strokeWidth: 4,
+                    color: const Color(0xFF0D9488),
+                    pattern: StrokePattern.dashed(segments: [10, 8]),
                   ),
-                ),
-              ...places.map(
-                (place) => Marker(
-                  point: latlong.LatLng(place.lat, place.lng),
-                  width: 140,
-                  height: 64,
-                  child: GestureDetector(
-                    onTap: () => onSelectPlace(place),
-                    child: _MapMarker(
-                      label: place.name,
-                      color: const Color(0xFF0D9488),
-                      isSelected: selectedPlaceId == place.id,
+                ],
+              ),
+            MarkerLayer(
+              markers: [
+                if (baseLocation != null)
+                  Marker(
+                    point: latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
+                    width: 120,
+                    height: 56,
+                    child: const _MapMarker(
+                      label: 'Base',
+                      color: Color(0xFF1D4ED8),
+                      isSelected: false,
+                    ),
+                  ),
+                ...places.map(
+                  (place) => Marker(
+                    point: latlong.LatLng(place.lat, place.lng),
+                    width: 140,
+                    height: 64,
+                    child: GestureDetector(
+                      onTap: () => onSelectPlace(place),
+                      child: _MapMarker(
+                        label: place.name,
+                        color: const Color(0xFF0D9488),
+                        isSelected: selectedPlaceId == place.id,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _MapReloadable extends StatefulWidget {
+  const _MapReloadable({required this.builder});
+
+  final WidgetBuilder builder;
+
+  @override
+  State<_MapReloadable> createState() => _MapReloadableState();
+}
+
+class _MapReloadableState extends State<_MapReloadable> {
+  int _generation = 0;
+
+  void _reload() => setState(() => _generation += 1);
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: KeyedSubtree(
+            key: ValueKey('map-reload-$_generation'),
+            child: Builder(builder: widget.builder),
+          ),
+        ),
+        Positioned(
+          top: 8,
+          right: 8,
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.92),
+            elevation: 2,
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: _reload,
+              child: const Padding(
+                padding: EdgeInsets.all(8),
+                child: Tooltip(
+                  message: '地図をリロード',
+                  child: Icon(
+                    Icons.refresh_rounded,
+                    size: 20,
+                    color: Color(0xFF0F766E),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
