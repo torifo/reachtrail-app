@@ -2303,6 +2303,7 @@ class _CandidateMap extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: _MapReloadable(
+        onReload: () => mapController.move(center, 15.5),
         builder: (context) => FlutterMap(
           mapController: mapController,
           options: MapOptions(
@@ -2367,9 +2368,10 @@ class _CandidateMap extends StatelessWidget {
 }
 
 class _MapReloadable extends StatefulWidget {
-  const _MapReloadable({required this.builder});
+  const _MapReloadable({required this.builder, this.onReload});
 
   final WidgetBuilder builder;
+  final VoidCallback? onReload;
 
   @override
   State<_MapReloadable> createState() => _MapReloadableState();
@@ -2378,7 +2380,13 @@ class _MapReloadable extends StatefulWidget {
 class _MapReloadableState extends State<_MapReloadable> {
   int _generation = 0;
 
-  void _reload() => setState(() => _generation += 1);
+  void _reload() {
+    setState(() => _generation += 1);
+    final callback = widget.onReload;
+    if (callback != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => callback());
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
