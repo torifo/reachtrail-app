@@ -123,6 +123,19 @@ class _SignInContent extends StatelessWidget {
   }
 }
 
+class _NoStretchScrollBehavior extends MaterialScrollBehavior {
+  const _NoStretchScrollBehavior();
+
+  @override
+  Widget buildOverscrollIndicator(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    return child;
+  }
+}
+
 class _SignInLayoutData {
   const _SignInLayoutData({
     required this.heroWidth,

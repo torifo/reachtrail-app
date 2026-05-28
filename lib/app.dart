@@ -60,6 +60,7 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
         return MaterialApp(
           title: 'ReachTrail',
           debugShowCheckedModeBanner: false,
+          scrollBehavior: const _NoStretchScrollBehavior(),
           theme: ThemeData(
             colorScheme: const ColorScheme.light(
               primary: Color(0xFF0F766E),
