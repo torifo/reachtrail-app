@@ -146,7 +146,7 @@ Phase 2 の残作業は以下。
 
 ```
 class PlaceSyncService {
-  Future<void> syncRecords(String sessionToken, BaseLocation base, List<LunchChallengeRecord> records);
+  Future<void> syncRecords(String sessionToken, BaseLocation base, List<DineChallengeRecord> records);
   Future<List<SharedPlaceEntry>> fetchNearby(String sessionToken, double lat, double lng, {double radiusMeters = 1200});
 }
 ```

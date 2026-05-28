@@ -110,7 +110,7 @@ ReachTrail の実装を安全に進めるため、いきなり本実装へ入ら
 
 目的:
 
-- ランチ記録登録が面倒すぎないか確認する
+- 外食記録登録が面倒すぎないか確認する
 
 確認項目:
 
@@ -151,7 +151,7 @@ ReachTrail の実装を安全に進めるため、いきなり本実装へ入ら
 - `category`
 - `rawPayload`
 
-### LunchChallengeRecord
+### DineChallengeRecord
 
 - `baseLocationId`
 - `placeId`
@@ -183,7 +183,7 @@ ReachTrail の実装を安全に進めるため、いきなり本実装へ入ら
 - 候補選択
 - 階数の自動取得
 - 階数の手入力補完
-- ランチ記録保存
+- 外食記録保存
 - 実距離表示
 - 難易度スコア表示
 - 自己ベスト一覧
