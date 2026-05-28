@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:reachtrail_app/models/lunch_challenge_record.dart';
+import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/place.dart';
 import 'package:reachtrail_app/services/place_search_service.dart';
@@ -70,7 +70,7 @@ void main() {
   });
 
   test('record copyWith can update score fields', () {
-    final record = LunchChallengeRecord(
+    final record = DineChallengeRecord(
       id: '1',
       baseLocationId: 'base',
       placeId: 'place',
@@ -211,7 +211,7 @@ void main() {
       places: [farRich, close],
       baseLocation: base,
       deduplicate: false,
-      purpose: SearchPurpose.lunchPlace,
+      purpose: SearchPurpose.dinePlace,
       query: 'shop',
     );
 
@@ -251,7 +251,7 @@ void main() {
       places: [plain, rich],
       baseLocation: base,
       deduplicate: false,
-      purpose: SearchPurpose.lunchPlace,
+      purpose: SearchPurpose.dinePlace,
       query: 'same',
     );
 

@@ -251,7 +251,7 @@ class _HeroPanel extends StatelessWidget {
             border: Border.all(color: const Color(0x1A0F172A)),
           ),
           child: Text(
-            'Lunch Distance Tracker',
+            'Dine Distance Tracker',
             style: theme.textTheme.labelLarge?.copyWith(
               color: const Color(0xFF0F766E),
               fontWeight: FontWeight.w700,
@@ -269,7 +269,7 @@ class _HeroPanel extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         Text(
-          '基準地点から店までの距離＆階数の組み合わせて到達難易度、行ったお店の一覧をまとめて記録できるランチログアプリ。',
+          '基準地点から店までの距離＆階数の組み合わせて到達難易度、行ったお店の一覧をまとめて記録できる外食ログアプリ。',
           style: theme.textTheme.titleMedium?.copyWith(
             color: const Color(0xFF334155),
             height: 1.5,
@@ -298,7 +298,7 @@ class _HeroPanel extends StatelessWidget {
         const SizedBox(height: 14),
         const _HeroFeature(
           title: 'Record',
-          description: '候補選択でも手入力でも、後から見返せる形でランチ記録を残せます。',
+          description: '候補選択でも手入力でも、後から見返せる形で外食記録を残せます。',
         ),
       ],
     );

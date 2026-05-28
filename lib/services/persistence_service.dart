@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/base_location.dart';
-import '../models/lunch_challenge_record.dart';
+import '../models/dine_challenge_record.dart';
 import '../models/place.dart';
 
 class PersistenceService {
@@ -50,7 +50,7 @@ class PersistenceService {
     );
   }
 
-  Future<List<LunchChallengeRecord>> loadRecords() async {
+  Future<List<DineChallengeRecord>> loadRecords() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_recordsKey);
     if (raw == null || raw.isEmpty) {
@@ -59,14 +59,14 @@ class PersistenceService {
     final decoded = jsonDecode(raw) as List<dynamic>;
     return decoded
         .map(
-          (item) => LunchChallengeRecord.fromJson(
+          (item) => DineChallengeRecord.fromJson(
             Map<String, dynamic>.from(item as Map),
           ),
         )
         .toList();
   }
 
-  Future<void> saveRecords(List<LunchChallengeRecord> records) async {
+  Future<void> saveRecords(List<DineChallengeRecord> records) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _recordsKey,

@@ -1,4 +1,4 @@
-import '../models/lunch_challenge_record.dart';
+import '../models/dine_challenge_record.dart';
 
 const int currentScoreVersion = 2;
 

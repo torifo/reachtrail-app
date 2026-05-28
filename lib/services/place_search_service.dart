@@ -27,14 +27,14 @@ class SearchConfig {
   final String yahooProxyBaseUrl;
 }
 
-enum SearchPurpose { lunchPlace, baseLocation }
+enum SearchPurpose { dinePlace, baseLocation }
 
 abstract class PlaceSearchService {
   Future<List<Place>> search({
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
-    SearchPurpose purpose = SearchPurpose.lunchPlace,
+    SearchPurpose purpose = SearchPurpose.dinePlace,
   });
 }
 
@@ -48,7 +48,7 @@ class CompositePlaceSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
-    SearchPurpose purpose = SearchPurpose.lunchPlace,
+    SearchPurpose purpose = SearchPurpose.dinePlace,
   }) async {
     final normalized = query.trim();
     if (normalized.isEmpty) {
@@ -92,7 +92,7 @@ class MockPlaceSearchService implements PlaceSearchService {
       buildingName: '都庁前フードホール',
       floorLabel: '32F',
       floorNumber: 32,
-      category: 'Lunch',
+      category: 'Dine',
     ),
     Place(
       id: 'mock-2',
@@ -140,7 +140,7 @@ class MockPlaceSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
-    SearchPurpose purpose = SearchPurpose.lunchPlace,
+    SearchPurpose purpose = SearchPurpose.dinePlace,
   }) async {
     final lowered = query.toLowerCase();
     final filtered = _samples.where((place) {
@@ -189,7 +189,7 @@ class YahooLocalSearchService implements PlaceSearchService {
     required String query,
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
-    SearchPurpose purpose = SearchPurpose.lunchPlace,
+    SearchPurpose purpose = SearchPurpose.dinePlace,
   }) async {
     final allPlaces = <Place>[];
     for (final variant in _queryVariants(query, purpose)) {
@@ -326,7 +326,7 @@ bool _shouldRetryBroaderYahooSearch({
   required List<Place> ranked,
 }) {
   return nearbyOnly &&
-      purpose == SearchPurpose.lunchPlace &&
+      purpose == SearchPurpose.dinePlace &&
       baseLocation != null &&
       ranked.isEmpty;
 }

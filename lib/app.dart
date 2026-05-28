@@ -8,7 +8,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 
 import 'models/base_location.dart';
-import 'models/lunch_challenge_record.dart';
+import 'models/dine_challenge_record.dart';
 import 'models/place.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
@@ -144,7 +144,7 @@ class ReachTrailController extends ChangeNotifier {
   String yahooApiKey = '';
   BaseLocation? baseLocation;
   List<Place> places = const [];
-  List<LunchChallengeRecord> records = const [];
+  List<DineChallengeRecord> records = const [];
   List<Place> searchResults = const [];
   List<Place> baseSearchResults = const [];
   List<Place> buildingSearchResults = const [];
@@ -248,7 +248,7 @@ class ReachTrailController extends ChangeNotifier {
 
   List<Place> _removeUnusedPlaces(
     List<Place> sourcePlaces,
-    List<LunchChallengeRecord> sourceRecords,
+    List<DineChallengeRecord> sourceRecords,
   ) {
     final usedPlaceIds = sourceRecords.map((record) => record.placeId).toSet();
     return sourcePlaces
@@ -382,7 +382,7 @@ class ReachTrailController extends ChangeNotifier {
       dineType: dineType,
     );
     final savedPlace = _upsertPlace(place);
-    final record = LunchChallengeRecord(
+    final record = DineChallengeRecord(
       id: recordId ?? DateTime.now().microsecondsSinceEpoch.toString(),
       baseLocationId: currentBase.id,
       placeId: savedPlace.id,
@@ -487,8 +487,8 @@ class ReachTrailController extends ChangeNotifier {
     return updatedCount;
   }
 
-  LunchChallengeRecord _recalculateRecord(
-    LunchChallengeRecord record,
+  DineChallengeRecord _recalculateRecord(
+    DineChallengeRecord record,
     BaseLocation currentBase,
   ) {
     final place = Place.fromJson(record.placeSnapshot);
@@ -557,7 +557,7 @@ class ReachTrailController extends ChangeNotifier {
     return place;
   }
 
-  List<LunchChallengeRecord> get sortedRecords {
+  List<DineChallengeRecord> get sortedRecords {
     final copy = [...records];
     switch (recordSort) {
       case RecordSort.latest:
@@ -572,14 +572,14 @@ class ReachTrailController extends ChangeNotifier {
     return copy;
   }
 
-  LunchChallengeRecord? get bestDistanceRecord {
+  DineChallengeRecord? get bestDistanceRecord {
     if (records.isEmpty) {
       return null;
     }
     return sortedRecordsFor(RecordSort.distance).first;
   }
 
-  LunchChallengeRecord? get bestDifficultyRecord {
+  DineChallengeRecord? get bestDifficultyRecord {
     if (records.isEmpty) {
       return null;
     }
@@ -602,7 +602,7 @@ class ReachTrailController extends ChangeNotifier {
     return (placeName: names[topId]!, count: counts[topId]!);
   }
 
-  List<LunchChallengeRecord> sortedRecordsFor(RecordSort sort) {
+  List<DineChallengeRecord> sortedRecordsFor(RecordSort sort) {
     final previous = recordSort;
     recordSort = sort;
     final result = sortedRecords;
@@ -1531,7 +1531,7 @@ class _RegisterTabState extends State<_RegisterTab> {
     if (saved == true && context.mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('ランチ記録を保存しました。')));
+      ).showSnackBar(const SnackBar(content: Text('外食記録を保存しました。')));
     }
   }
 
@@ -2568,7 +2568,7 @@ class _RecordSheet extends StatefulWidget {
 
   final ReachTrailController controller;
   final Place? initialPlace;
-  final LunchChallengeRecord? existingRecord;
+  final DineChallengeRecord? existingRecord;
 
   @override
   State<_RecordSheet> createState() => _RecordSheetState();
@@ -3326,7 +3326,7 @@ class _MapTabState extends State<_MapTab> {
     _mapController.move(latlong.LatLng(entry.place.lat, entry.place.lng), 16);
   }
 
-  Future<void> _editRecord(LunchChallengeRecord record) async {
+  Future<void> _editRecord(DineChallengeRecord record) async {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -3579,7 +3579,7 @@ class _MyMapView extends StatelessWidget {
   final String? selectedPlaceId;
   final int recordCount;
   final ValueChanged<_SharedPlaceEntry> onSelectEntry;
-  final ValueChanged<LunchChallengeRecord> onEditRecord;
+  final ValueChanged<DineChallengeRecord> onEditRecord;
   final ValueChanged<_SharedPlaceEntry> onDeletePlaceRecords;
 
   @override
@@ -3648,7 +3648,7 @@ class _SharedPlaceMapOverview extends StatelessWidget {
   final List<_SharedPlaceEntry> entries;
   final String? selectedPlaceId;
   final ValueChanged<_SharedPlaceEntry> onSelectEntry;
-  final ValueChanged<LunchChallengeRecord> onEditRecord;
+  final ValueChanged<DineChallengeRecord> onEditRecord;
   final ValueChanged<_SharedPlaceEntry> onDeletePlaceRecords;
 
   @override
@@ -3916,14 +3916,14 @@ class _SharedPlaceEntry {
   final double averageDifficulty;
   final double bestRouteDistanceMeters;
   final DateTime? latestVisitedAt;
-  final LunchChallengeRecord latestRecord;
+  final DineChallengeRecord latestRecord;
 }
 
 List<_SharedPlaceEntry> _buildMapEntries(
   ReachTrailController controller,
   String baseLocationId,
 ) {
-  final recordsByPlace = <String, List<LunchChallengeRecord>>{};
+  final recordsByPlace = <String, List<DineChallengeRecord>>{};
   for (final record in controller.records) {
     if (record.baseLocationId != baseLocationId) {
       continue;
@@ -4098,7 +4098,7 @@ class _RecordsTab extends StatelessWidget {
 
   Future<void> _deleteRecord(
     BuildContext context,
-    LunchChallengeRecord record,
+    DineChallengeRecord record,
   ) async {
     final place = Place.fromJson(record.placeSnapshot);
     final confirmed = await showDialog<bool>(
@@ -4139,7 +4139,7 @@ class _RecordTile extends StatelessWidget {
     required this.onDelete,
   });
 
-  final LunchChallengeRecord record;
+  final DineChallengeRecord record;
   final Future<void> Function() onEdit;
   final Future<void> Function() onDelete;
 
@@ -4233,8 +4233,8 @@ class _BestRecordTile extends StatelessWidget {
   });
 
   final String label;
-  final LunchChallengeRecord? record;
-  final String Function(LunchChallengeRecord record) metricBuilder;
+  final DineChallengeRecord? record;
+  final String Function(DineChallengeRecord record) metricBuilder;
 
   @override
   Widget build(BuildContext context) {

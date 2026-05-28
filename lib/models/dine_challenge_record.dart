@@ -2,8 +2,8 @@ enum DineType { dineIn, takeout }
 
 enum RecordSort { latest, distance, difficulty }
 
-class LunchChallengeRecord {
-  const LunchChallengeRecord({
+class DineChallengeRecord {
+  const DineChallengeRecord({
     required this.id,
     required this.baseLocationId,
     required this.placeId,
@@ -41,7 +41,7 @@ class LunchChallengeRecord {
   final double difficultyScore;
   final int scoreVersion;
 
-  LunchChallengeRecord copyWith({
+  DineChallengeRecord copyWith({
     String? id,
     String? baseLocationId,
     String? placeId,
@@ -61,7 +61,7 @@ class LunchChallengeRecord {
     double? difficultyScore,
     int? scoreVersion,
   }) {
-    return LunchChallengeRecord(
+    return DineChallengeRecord(
       id: id ?? this.id,
       baseLocationId: baseLocationId ?? this.baseLocationId,
       placeId: placeId ?? this.placeId,
@@ -105,8 +105,8 @@ class LunchChallengeRecord {
     };
   }
 
-  factory LunchChallengeRecord.fromJson(Map<String, dynamic> json) {
-    return LunchChallengeRecord(
+  factory DineChallengeRecord.fromJson(Map<String, dynamic> json) {
+    return DineChallengeRecord(
       id: json['id'] as String,
       baseLocationId: json['baseLocationId'] as String,
       placeId: json['placeId'] as String,
