@@ -2390,23 +2390,40 @@ class _MapReloadableState extends State<_MapReloadable> {
           ),
         ),
         Positioned(
-          top: 8,
-          right: 8,
+          top: 10,
+          right: 10,
           child: Material(
-            color: Colors.white.withValues(alpha: 0.92),
-            elevation: 2,
-            shape: const CircleBorder(),
+            color: const Color(0xFF0F766E),
+            elevation: 4,
+            shadowColor: Colors.black.withValues(alpha: 0.35),
+            shape: const StadiumBorder(
+              side: BorderSide(color: Colors.white, width: 2),
+            ),
             clipBehavior: Clip.antiAlias,
             child: InkWell(
               onTap: _reload,
               child: const Padding(
-                padding: EdgeInsets.all(8),
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: Tooltip(
                   message: '地図をリロード',
-                  child: Icon(
-                    Icons.refresh_rounded,
-                    size: 20,
-                    color: Color(0xFF0F766E),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.refresh_rounded,
+                        size: 18,
+                        color: Colors.white,
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        'リロード',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
