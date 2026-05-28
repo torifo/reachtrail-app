@@ -1,4 +1,4 @@
-package com.example.reachtrail_app
+package net.riumu.reachtrail
 
 import io.flutter.embedding.android.FlutterActivity
 
