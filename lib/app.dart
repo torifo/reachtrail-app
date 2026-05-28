@@ -1482,7 +1482,7 @@ class _RegisterTabState extends State<_RegisterTab> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Candidate Map',
-            subtitle: 'Google有料サービスは利用しておらず、OpenStreetMapで基準地点と候補位置を見比べられます。',
+            subtitle: 'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
             child: SizedBox(
               height: 320,
               child: _CandidateMap(
@@ -3490,7 +3490,7 @@ class _MapModeSelector extends StatelessWidget {
             selectedMode: mode,
             icon: Icons.groups,
             label: '近くの共有',
-            description: '準備中',
+            description: '今後対応予定',
             onChanged: onChanged,
           ),
         ];
@@ -3704,7 +3704,7 @@ class _NearbySharedView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Text('近くの共有は準備中です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示します。');
+    return const Text('近くの共有は今後追加予定です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示できるようになります。');
   }
 }
 

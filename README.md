@@ -140,7 +140,7 @@ macOS で `Connection refused ... http://localhost:8080/auth/google` が出る�
 ## Google ログイン
 
 現時点では `web`、`Android`、`macOS` で Google ログインを有効化しています。
-メール認証はまだ未実装です。
+メール認証は今後対応予定です。
 
 - Web client ID:
   `823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com`
