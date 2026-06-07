@@ -1,5 +1,12 @@
 # ReachTrail
 
+<!-- tech-stack:start (auto-generated) -->
+<p align="center">
+  <img src="https://img.shields.io/badge/Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white" alt="Flutter">
+  <img src="https://img.shields.io/badge/Dart-0175C2?style=for-the-badge&logo=dart&logoColor=white" alt="Dart">
+</p>
+<!-- tech-stack:end -->
+
 ReachTrail は、基準地点から外食先までの距離と難易度を記録する Flutter MVP です。
 Web は MVP として問題なく利用できる状態です。
 macOS はダウンロードして使える状態です。
