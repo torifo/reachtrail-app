@@ -63,31 +63,56 @@ Android はテスターを募っており、公開準備中です。
 
 ## 設定ファイル
 
-ローカル設定は `assets/config/.env` または `assets/config/.vars` に記載できます。
-非 `web` では優先順位は `.env` -> `.vars` -> `--dart-define` です。
-`web` はアセット設定を読まず、`--dart-define` を使います。
+設定ファイルは 2 種類あり、**アプリにバンドルされるのは `.vars` だけ**です。
+
+| ファイル | バンドル | 用途 |
+| --- | --- | --- |
+| `assets/config/.vars` | される | リリースを含む全ビルドの非機密設定 |
+| `assets/config/.env` | されない | ローカル開発時の控え（実行時には読まれない） |
+
+### `.vars`（バンドルされる／機密情報は不可）
+
+`pubspec.yaml` の asset 一覧に載っている唯一の設定ファイルで、リリース成果物
+（`.aab` / `.ipa`）の中に**そのまま入ります**。したがって API キーなどの機密情報を
+書いてはいけません。Yahoo! ローカルサーチのキーは API プロキシ側にのみ置きます。
+
+```bash
+cp assets/config/.vars.example assets/config/.vars
+```
+
+```dotenv
+PLACE_SEARCH_PROVIDER=yahoo
+YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch
+API_BASE_URL=https://api.reachtrail.riumu.net
+GOOGLE_WEB_CLIENT_ID=...apps.googleusercontent.com
+GOOGLE_MACOS_CLIENT_ID=...apps.googleusercontent.com
+```
+
+Google の OAuth クライアント ID は公開前提の識別子なので、ここに置いて問題ありません。
+
+### `.env`（バンドルされない／ローカル開発専用）
+
+`pubspec.yaml` の asset 一覧に**載せていない**ため、実行時に読み込まれることはなく、
+リリース成果物にも入りません。ローカル開発の値を手元に控えておくためのファイルです。
 
 ```bash
 cp assets/config/.env.example assets/config/.env
 ```
 
-`.env` の例:
+開発中に Yahoo API を直接叩きたい場合は、キーをコマンドラインから渡します。
+このパスはデバッグビルド（`kDebugMode`）でのみ有効です。
 
-```dotenv
-PLACE_SEARCH_PROVIDER=yahoo
-YAHOO_API_KEY=YOUR_YAHOO_API_KEY
-YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch
-API_BASE_URL=https://api.reachtrail.riumu.net
-GOOGLE_WEB_CLIENT_ID=823224608668-trbi6qgpsmsn2o8qika1bbf8o30ihqpd.apps.googleusercontent.com
-GOOGLE_MACOS_CLIENT_ID=823224608668-9blagvtvvuoa728q195ma5jlpeq1308a.apps.googleusercontent.com
+```bash
+flutter run --dart-define=YAHOO_API_KEY=<your key>
 ```
 
-`.vars` の例:
+リリースビルドでは、`YAHOO_PROXY_BASE_URL` が未設定だと店舗検索はエラーになります。
+クライアント側のキーで Yahoo を直接呼ぶことは、リリースでは行いません。
 
-```dotenv
-PLACE_SEARCH_PROVIDER=mock
-YAHOO_CLIENT_ID=
-```
+### 優先順位
+
+非 `web` では `.vars` -> `--dart-define` の順に解決します。
+`web` はアセット設定を読まず、`--dart-define` を使います。
 
 設定変更後は、アプリ内の「設定を再読込」か再起動で反映します。
 Google ログイン設定や `API_BASE_URL` を変えた場合は、`flutter run` を一度終了してから起動し直してください。

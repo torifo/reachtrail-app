@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, kIsWeb;
 import 'package:flutter/services.dart';
 
 class LocalConfig {
@@ -21,8 +21,23 @@ class LocalConfig {
   final String googleWindowsClientId;
 }
 
+/// Thrown when a release build is missing its bundled configuration asset.
+class LocalConfigException implements Exception {
+  const LocalConfigException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class LocalConfigService {
-  static const _envAsset = 'assets/config/.env';
+  /// The only config asset bundled into the app.
+  ///
+  /// It must never contain a secret: everything in it ships inside the release
+  /// artifact. `assets/config/.env` is intentionally NOT bundled (it is absent
+  /// from the pubspec asset list), so the Yahoo! Local Search key can only
+  /// reach the app through `--dart-define` in a local debug build.
   static const _varsAsset = 'assets/config/.vars';
 
   Future<LocalConfig> load() async {
@@ -30,13 +45,21 @@ class LocalConfigService {
 
     if (!kIsWeb) {
       final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-      final assets = manifest.listAssets();
-      for (final asset in [_envAsset, _varsAsset]) {
-        if (!assets.contains(asset)) {
-          continue;
-        }
-        final content = await rootBundle.loadString(asset);
+      if (manifest.listAssets().contains(_varsAsset)) {
+        final content = await rootBundle.loadString(_varsAsset);
         entries.addAll(_parse(content));
+      } else if (!kDebugMode) {
+        // A release build without the config asset would silently fall back to
+        // the mock provider and a localhost API, which looks like a broken app
+        // with no clue as to why. Fail loudly instead; the caller turns this
+        // into a visible startup error.
+        debugPrint(
+          'ReachTrail: $_varsAsset is missing from the release bundle. '
+          'Run the config generation step before building.',
+        );
+        throw const LocalConfigException(
+          'アプリの設定ファイルが見つかりません。アプリを再インストールしてください。',
+        );
       }
     }
 
@@ -47,10 +70,12 @@ class LocalConfigService {
             'PLACE_SEARCH_PROVIDER',
             defaultValue: 'mock',
           ),
-      yahooApiKey:
-          entries['YAHOO_API_KEY'] ??
-          entries['YAHOO_CLIENT_ID'] ??
-          const String.fromEnvironment('YAHOO_API_KEY', defaultValue: ''),
+      // Never sourced from a bundled asset: a client-side Yahoo key would ship
+      // inside the release artifact. Debug builds may supply one via
+      // `--dart-define=YAHOO_API_KEY=...`; release builds must use the proxy.
+      yahooApiKey: kDebugMode
+          ? const String.fromEnvironment('YAHOO_API_KEY', defaultValue: '')
+          : '',
       yahooProxyBaseUrl:
           entries['YAHOO_PROXY_BASE_URL'] ??
           const String.fromEnvironment(

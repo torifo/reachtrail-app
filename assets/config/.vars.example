@@ -1,3 +1,11 @@
-# ReachTrail local config
-PLACE_SEARCH_PROVIDER=mock
-YAHOO_CLIENT_ID=
+# ReachTrail bundled config (non-secret only)
+#
+# Copy this file to `assets/config/.vars`.
+# This is the ONLY config file bundled into release builds, so it must never
+# contain an API key or any other secret. The Yahoo! Local Search key lives on
+# the API proxy server, not in the app.
+PLACE_SEARCH_PROVIDER=yahoo
+YAHOO_PROXY_BASE_URL=https://api.reachtrail.riumu.net/yahoo/localSearch
+API_BASE_URL=https://api.reachtrail.riumu.net
+GOOGLE_WEB_CLIENT_ID=your_google_web_client_id.apps.googleusercontent.com
+GOOGLE_MACOS_CLIENT_ID=your_google_macos_client_id.apps.googleusercontent.com
