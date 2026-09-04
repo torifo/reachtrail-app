@@ -76,7 +76,11 @@ class _SignInBody extends StatelessWidget {
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              minHeight: viewportConstraints.maxHeight - 48,
+              // A very short viewport (or an unbounded one) must not produce a
+              // negative minHeight, which asserts in debug.
+              minHeight: viewportConstraints.maxHeight.isFinite
+                  ? math.max(0.0, viewportConstraints.maxHeight - 48)
+                  : 0.0,
             ),
             child: Center(child: _SignInContent(authService: authService)),
           ),

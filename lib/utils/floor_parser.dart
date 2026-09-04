@@ -1,5 +1,8 @@
 final _floorPattern = RegExp(r'(-?\d+)\s*(?:F|階)', caseSensitive: false);
-final _basementPattern = RegExp(r'(?:B|地下)\s*(\d+)\s*(?:F|階)?', caseSensitive: false);
+final _basementPattern = RegExp(
+  r'(?:B|地下)\s*(\d+)\s*(?:F|階)?',
+  caseSensitive: false,
+);
 
 String _normalizeFloorText(String input) {
   const pairs = <String, String>{
@@ -32,14 +35,22 @@ int? parseFloorNumber(String input) {
     return null;
   }
 
+  // Every parse is a tryParse: an unusual label must yield null rather than
+  // throwing out of whatever is rendering the place.
   final basement = _basementPattern.firstMatch(value);
   if (basement != null) {
-    return -int.parse(basement.group(1)!);
+    final parsed = int.tryParse(basement.group(1) ?? '');
+    if (parsed != null) {
+      return -parsed;
+    }
   }
 
   final floor = _floorPattern.firstMatch(value);
   if (floor != null) {
-    return int.parse(floor.group(1)!);
+    final parsed = int.tryParse(floor.group(1) ?? '');
+    if (parsed != null) {
+      return parsed;
+    }
   }
 
   return int.tryParse(value);

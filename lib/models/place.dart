@@ -101,24 +101,66 @@ class Place {
     };
   }
 
+  /// Tolerant decoder: never hard-casts, so data written by an older build
+  /// cannot crash the app while loading saved places.
   factory Place.fromJson(Map<String, dynamic> json) {
     return Place(
-      id: json['id'] as String,
-      provider: json['provider'] as String,
-      providerPlaceId: json['providerPlaceId'] as String,
-      name: json['name'] as String,
-      lat: (json['lat'] as num).toDouble(),
-      lng: (json['lng'] as num).toDouble(),
-      address: (json['address'] as String?) ?? '',
-      buildingName: (json['buildingName'] as String?) ?? '',
-      floorLabel: (json['floorLabel'] as String?) ?? '',
-      floorNumber: (json['floorNumber'] as num?)?.toInt(),
-      entranceFloorLabel: (json['entranceFloorLabel'] as String?) ?? '',
-      entranceFloorNumber: (json['entranceFloorNumber'] as num?)?.toInt(),
-      hasElevator: (json['hasElevator'] as bool?) ?? true,
-      elevatorRideCount: (json['elevatorRideCount'] as num?)?.toInt(),
-      category: (json['category'] as String?) ?? '',
-      rawPayload: (json['rawPayload'] as String?) ?? '',
+      id: _asString(json['id']),
+      provider: _asString(json['provider']),
+      providerPlaceId: _asString(json['providerPlaceId']),
+      name: _asString(json['name']),
+      lat: _asDouble(json['lat'], 0),
+      lng: _asDouble(json['lng'], 0),
+      address: _asString(json['address']),
+      buildingName: _asString(json['buildingName']),
+      floorLabel: _asString(json['floorLabel']),
+      floorNumber: _asInt(json['floorNumber']),
+      entranceFloorLabel: _asString(json['entranceFloorLabel']),
+      entranceFloorNumber: _asInt(json['entranceFloorNumber']),
+      hasElevator: _asBool(json['hasElevator'], true),
+      elevatorRideCount: _asInt(json['elevatorRideCount']),
+      category: _asString(json['category']),
+      rawPayload: _asString(json['rawPayload']),
     );
   }
+}
+
+String _asString(Object? value) => _asOptionalString(value) ?? '';
+
+String? _asOptionalString(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  return value is String ? value : '$value';
+}
+
+int? _asInt(Object? value) {
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value) ?? double.tryParse(value)?.toInt();
+  }
+  return null;
+}
+
+double _asDouble(Object? value, double fallback) {
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value) ?? fallback;
+  }
+  return fallback;
+}
+
+bool _asBool(Object? value, bool fallback) {
+  if (value is bool) {
+    return value;
+  }
+  if (value is String) {
+    if (value == 'true') return true;
+    if (value == 'false') return false;
+  }
+  return fallback;
 }

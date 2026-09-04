@@ -65,7 +65,11 @@ class DineChallengeRecord {
       id: id ?? this.id,
       baseLocationId: baseLocationId ?? this.baseLocationId,
       placeId: placeId ?? this.placeId,
-      placeSnapshot: placeSnapshot ?? this.placeSnapshot,
+      // Defensive copy: without it every copyWith result would share the same
+      // mutable snapshot map as the original record.
+      placeSnapshot: Map<String, dynamic>.from(
+        placeSnapshot ?? this.placeSnapshot,
+      ),
       visitedAt: visitedAt ?? this.visitedAt,
       timeLimitMinutes: timeLimitMinutes ?? this.timeLimitMinutes,
       dineType: dineType ?? this.dineType,
@@ -105,33 +109,93 @@ class DineChallengeRecord {
     };
   }
 
+  /// Tolerant decoder: records written by older builds (or partially corrupted
+  /// entries) must never crash the app at startup, so every field falls back to
+  /// a sane default instead of hard-casting.
   factory DineChallengeRecord.fromJson(Map<String, dynamic> json) {
     return DineChallengeRecord(
-      id: json['id'] as String,
-      baseLocationId: json['baseLocationId'] as String,
-      placeId: json['placeId'] as String,
-      placeSnapshot: Map<String, dynamic>.from(
-        (json['placeSnapshot'] as Map).cast<String, dynamic>(),
-      ),
-      visitedAt: DateTime.parse(json['visitedAt'] as String),
-      timeLimitMinutes: (json['timeLimitMinutes'] as num).toInt(),
-      dineType: DineType.values.byName(json['dineType'] as String),
-      menu: (json['menu'] as String?) ?? '',
-      price: (json['price'] as num?)?.toInt(),
-      paymentMethod: (json['paymentMethod'] as String?) ?? '',
-      memo: (json['memo'] as String?) ?? '',
+      id: _asString(json['id']),
+      baseLocationId: _asString(json['baseLocationId']),
+      placeId: _asString(json['placeId']),
+      placeSnapshot: json['placeSnapshot'] is Map
+          ? Map<String, dynamic>.from(json['placeSnapshot'] as Map)
+          : <String, dynamic>{},
+      // An unparseable timestamp used to become 1970-01-01, which sorts and
+      // reads as a real visit. Treat it as corrupt so the persistence layer
+      // skips the entry instead.
+      visitedAt: _parseVisitedAt(json['visitedAt']),
+      timeLimitMinutes: _asInt(json['timeLimitMinutes']) ?? 0,
+      dineType: parseDineType(json['dineType']),
+      menu: _asOptionalString(json['menu']) ?? '',
+      price: _asInt(json['price']),
+      paymentMethod: _asOptionalString(json['paymentMethod']) ?? '',
+      memo: _asOptionalString(json['memo']) ?? '',
       straightLineDistanceMeters:
-          (json['straightLineDistanceMeters'] as num?)?.toDouble() ??
-          (json['horizontalDistanceMeters'] as num?)?.toDouble() ??
+          _asDouble(json['straightLineDistanceMeters']) ??
+          _asDouble(json['horizontalDistanceMeters']) ??
           0,
       routeDistanceMeters:
-          (json['routeDistanceMeters'] as num?)?.toDouble() ??
-          (json['horizontalDistanceMeters'] as num?)?.toDouble() ??
+          _asDouble(json['routeDistanceMeters']) ??
+          _asDouble(json['horizontalDistanceMeters']) ??
           0,
-      baseVerticalFloors: (json['baseVerticalFloors'] as num?)?.toInt() ?? 0,
-      placeVerticalFloors: (json['placeVerticalFloors'] as num?)?.toInt() ?? 0,
-      difficultyScore: (json['difficultyScore'] as num).toDouble(),
-      scoreVersion: (json['scoreVersion'] as num).toInt(),
+      baseVerticalFloors: _asInt(json['baseVerticalFloors']) ?? 0,
+      placeVerticalFloors: _asInt(json['placeVerticalFloors']) ?? 0,
+      difficultyScore: _asDouble(json['difficultyScore']) ?? 0,
+      scoreVersion: _asInt(json['scoreVersion']) ?? 1,
     );
   }
+}
+
+DateTime _parseVisitedAt(Object? value) {
+  final parsed = DateTime.tryParse(_asString(value));
+  if (parsed == null) {
+    throw const FormatException(
+      'DineChallengeRecord requires a parseable visitedAt value.',
+    );
+  }
+  return parsed.toLocal();
+}
+
+/// Resolves a stored `dineType` name, defaulting to [DineType.dineIn] for
+/// values written by a future build or otherwise unrecognised.
+DineType parseDineType(Object? value) {
+  final name = _asOptionalString(value);
+  if (name == null) {
+    return DineType.dineIn;
+  }
+  for (final type in DineType.values) {
+    if (type.name == name) {
+      return type;
+    }
+  }
+  return DineType.dineIn;
+}
+
+String _asString(Object? value) => _asOptionalString(value) ?? '';
+
+String? _asOptionalString(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  return value is String ? value : '$value';
+}
+
+int? _asInt(Object? value) {
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value) ?? double.tryParse(value)?.toInt();
+  }
+  return null;
+}
+
+double? _asDouble(Object? value) {
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value);
+  }
+  return null;
 }

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:http/http.dart' as http;
 
 import '../models/base_location.dart';
@@ -15,16 +17,55 @@ const double walkingSearchRadiusMeters = walkingSearchRadiusKm * 1000;
 const double rankingDistanceTieThresholdMeters = 120;
 const double dedupCoordinateThresholdMeters = 35;
 
+/// Maps a place-search failure onto a short Japanese message for the UI.
+///
+/// Raw `toString()` output (host names, stack-ish text) never reaches the user.
+String describeSearchFailure(Object error) {
+  if (error is PlaceSearchConfigurationException) {
+    return error.message;
+  }
+  if (error is TimeoutException) {
+    return '通信に失敗しました。電波状況を確認して再試行してください。';
+  }
+  if (error is http.ClientException || _looksLikeNetworkError(error)) {
+    return '通信に失敗しました。電波状況を確認して再試行してください。';
+  }
+  return '検索に失敗しました。しばらく待ってから再試行してください。';
+}
+
+/// `SocketException` lives in `dart:io`, which cannot be imported on web, so it
+/// is recognised by name instead.
+bool _looksLikeNetworkError(Object error) {
+  final name = error.runtimeType.toString();
+  return name == 'SocketException' ||
+      name == 'HandshakeException' ||
+      name == 'HttpException';
+}
+
 class SearchConfig {
   const SearchConfig({
     required this.provider,
     required this.yahooApiKey,
     this.yahooProxyBaseUrl = '',
+    this.sessionTokenProvider,
   });
 
   final String provider;
   final String yahooApiKey;
   final String yahooProxyBaseUrl;
+
+  /// Supplies the current API session token, used to authenticate proxy calls.
+  final String Function()? sessionTokenProvider;
+}
+
+/// Thrown when place search cannot run safely with the current configuration.
+class PlaceSearchConfigurationException implements Exception {
+  const PlaceSearchConfigurationException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 enum SearchPurpose { dinePlace, baseLocation }
@@ -56,17 +97,33 @@ class CompositePlaceSearchService implements PlaceSearchService {
     }
 
     final provider = _config.provider.toLowerCase();
-    if (provider == 'yahoo' &&
-        (_config.yahooApiKey.isNotEmpty ||
-            _config.yahooProxyBaseUrl.isNotEmpty)) {
-      return YahooLocalSearchService(
-        _config.yahooApiKey,
-        proxyBaseUrl: _config.yahooProxyBaseUrl,
-      ).search(
-        query: normalized,
-        baseLocation: baseLocation,
-        nearbyOnly: nearbyOnly,
-        purpose: purpose,
+    if (provider == 'yahoo') {
+      final hasProxy = _config.yahooProxyBaseUrl.isNotEmpty;
+      // A client-side Yahoo key must never be used outside local development:
+      // in a shipped build the key would be extractable from the artifact.
+      final canCallYahooDirectly = kDebugMode && _config.yahooApiKey.isNotEmpty;
+
+      if (hasProxy || canCallYahooDirectly) {
+        final service = YahooLocalSearchService(
+          canCallYahooDirectly ? _config.yahooApiKey : '',
+          proxyBaseUrl: _config.yahooProxyBaseUrl,
+          sessionTokenProvider: _config.sessionTokenProvider,
+        );
+        try {
+          return await service.search(
+            query: normalized,
+            baseLocation: baseLocation,
+            nearbyOnly: nearbyOnly,
+            purpose: purpose,
+          );
+        } finally {
+          // One client per search would otherwise leak its connection pool.
+          service.dispose();
+        }
+      }
+
+      throw const PlaceSearchConfigurationException(
+        '店舗検索プロキシ (YAHOO_PROXY_BASE_URL) が設定されていないため検索できません。',
       );
     }
 
@@ -177,12 +234,23 @@ class YahooLocalSearchService implements PlaceSearchService {
   YahooLocalSearchService(
     this._apiKey, {
     this.proxyBaseUrl = '',
+    this.sessionTokenProvider,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  }) : _client = client ?? http.Client(),
+       _ownsClient = client == null;
 
   final String _apiKey;
   final String proxyBaseUrl;
+  final String Function()? sessionTokenProvider;
   final http.Client _client;
+  final bool _ownsClient;
+
+  /// Releases the HTTP client when this service created it.
+  void dispose() {
+    if (_ownsClient) {
+      _client.close();
+    }
+  }
 
   @override
   Future<List<Place>> search({
@@ -259,22 +327,61 @@ class YahooLocalSearchService implements PlaceSearchService {
     };
 
     final Uri uri;
+    final headers = <String, String>{};
     if (proxyBaseUrl.isNotEmpty) {
       uri = Uri.parse(proxyBaseUrl).replace(queryParameters: params);
+      // The proxy requires an authenticated caller; the server answers 401 when
+      // the token is missing or expired, which is surfaced below.
+      final sessionToken = sessionTokenProvider?.call() ?? '';
+      if (sessionToken.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $sessionToken';
+      }
     } else {
+      if (!kDebugMode || _apiKey.isEmpty) {
+        throw const PlaceSearchConfigurationException(
+          '店舗検索プロキシが設定されていないため検索できません。',
+        );
+      }
       uri = Uri.https('map.yahooapis.jp', '/search/local/V1/localSearch', {
         'appid': _apiKey,
         ...params,
       });
     }
-    final response = await _client.get(uri);
+    final response = await _client
+        .get(uri, headers: headers)
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode == 401) {
+      throw const PlaceSearchConfigurationException(
+        'ログインセッションの有効期限が切れました。再度サインインしてください。',
+      );
+    }
+    if (response.statusCode == 429) {
+      throw const PlaceSearchConfigurationException(
+        '検索リクエストが多すぎます。しばらく待ってからお試しください。',
+      );
+    }
     if (response.statusCode != 200) {
       throw Exception('Yahoo API request failed: ${response.statusCode}');
     }
 
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-    final features = (decoded['Feature'] as List<dynamic>? ?? const []).map(
-      (item) => Map<String, dynamic>.from(item as Map),
+    // A 200 whose body is not the documented shape is treated as "no results"
+    // rather than crashing on a failed cast.
+    final Object? body;
+    try {
+      body = jsonDecode(response.body);
+    } on FormatException {
+      return const [];
+    }
+    if (body is! Map) {
+      return const [];
+    }
+    final decoded = Map<String, dynamic>.from(body);
+    final rawFeatures = decoded['Feature'];
+    if (rawFeatures is! List) {
+      return const [];
+    }
+    final features = rawFeatures.whereType<Map>().map(
+      (item) => Map<String, dynamic>.from(item),
     );
 
     return features.map((item) {
@@ -337,8 +444,7 @@ List<String> _queryVariants(String query, SearchPurpose purpose) {
     return variants;
   }
 
-  final normalized = query
-      .trim();
+  final normalized = query.trim();
   if (normalized.isNotEmpty && !variants.contains(normalized)) {
     variants.add(normalized);
   }

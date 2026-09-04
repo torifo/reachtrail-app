@@ -76,19 +76,75 @@ class BaseLocation {
     };
   }
 
+  /// Tolerant decoder: never hard-casts, so a partially written or older base
+  /// location cannot crash the app at startup.
+  ///
+  /// Coordinates are the exception. A missing or non-numeric `lat`/`lng` used
+  /// to decode to (0, 0) off the coast of Africa, which every distance and
+  /// score then silently computed against. Such an entry is corrupt, so this
+  /// throws [FormatException] and the persistence layer drops it.
   factory BaseLocation.fromJson(Map<String, dynamic> json) {
+    final lat = _asOptionalDouble(json['lat']);
+    final lng = _asOptionalDouble(json['lng']);
+    if (lat == null || lng == null) {
+      throw const FormatException(
+        'BaseLocation requires numeric lat and lng values.',
+      );
+    }
     return BaseLocation(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      lat: (json['lat'] as num).toDouble(),
-      lng: (json['lng'] as num).toDouble(),
-      floorLabel: (json['floorLabel'] as String?) ?? '',
-      floorNumber: (json['floorNumber'] as num?)?.toInt(),
-      entryFloorLabel: (json['entryFloorLabel'] as String?) ?? '',
-      entryFloorNumber: (json['entryFloorNumber'] as num?)?.toInt(),
-      hasElevator: (json['hasElevator'] as bool?) ?? true,
-      elevatorRideCount: (json['elevatorRideCount'] as num?)?.toInt(),
-      memo: (json['memo'] as String?) ?? '',
+      id: _asString(json['id']),
+      name: _asString(json['name']),
+      lat: lat,
+      lng: lng,
+      floorLabel: _asString(json['floorLabel']),
+      floorNumber: _asInt(json['floorNumber']),
+      entryFloorLabel: _asString(json['entryFloorLabel']),
+      entryFloorNumber: _asInt(json['entryFloorNumber']),
+      hasElevator: _asBool(json['hasElevator'], true),
+      elevatorRideCount: _asInt(json['elevatorRideCount']),
+      memo: _asString(json['memo']),
     );
   }
+}
+
+String _asString(Object? value) => _asOptionalString(value) ?? '';
+
+String? _asOptionalString(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  return value is String ? value : '$value';
+}
+
+int? _asInt(Object? value) {
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value) ?? double.tryParse(value)?.toInt();
+  }
+  return null;
+}
+
+double? _asOptionalDouble(Object? value) {
+  if (value is num) {
+    final result = value.toDouble();
+    return result.isFinite ? result : null;
+  }
+  if (value is String) {
+    final parsed = double.tryParse(value.trim());
+    return (parsed != null && parsed.isFinite) ? parsed : null;
+  }
+  return null;
+}
+
+bool _asBool(Object? value, bool fallback) {
+  if (value is bool) {
+    return value;
+  }
+  if (value is String) {
+    if (value == 'true') return true;
+    if (value == 'false') return false;
+  }
+  return fallback;
 }

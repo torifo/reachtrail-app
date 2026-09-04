@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter/foundation.dart' show Listenable, kIsWeb;
+import 'package:flutter/foundation.dart' show Listenable, kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 
@@ -22,6 +23,11 @@ import 'widgets/google_sign_in_web_button_stub.dart'
 
 part 'widgets/sign_in_screen.dart';
 
+/// Shown whenever a write to local storage fails; the underlying error is not
+/// actionable for the user.
+const String saveFailureMessage = '保存に失敗しました。もう一度お試しください。';
+const String deleteFailureMessage = '削除に失敗しました。もう一度お試しください。';
+
 class ReachTrailApp extends StatefulWidget {
   const ReachTrailApp({super.key});
 
@@ -37,12 +43,13 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   void initState() {
     super.initState();
     final configService = LocalConfigService();
+    _authService = GoogleAuthService(configService: configService);
     _controller = ReachTrailController(
       persistence: PersistenceService(),
       configService: configService,
+      sessionTokenProvider: () => _authService.currentUser?.sessionToken ?? '',
     )..load();
-    _authService = GoogleAuthService(configService: configService)
-      ..initialize();
+    _authService.initialize();
   }
 
   @override
@@ -60,6 +67,9 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
         return MaterialApp(
           title: 'ReachTrail',
           debugShowCheckedModeBanner: false,
+          locale: const Locale('ja'),
+          supportedLocales: const [Locale('ja')],
+          localizationsDelegates: GlobalMaterialLocalizations.delegates,
           scrollBehavior: const _NoStretchScrollBehavior(),
           theme: ThemeData(
             colorScheme: const ColorScheme.light(
@@ -123,15 +133,30 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   }
 }
 
+final _idRandom = math.Random();
+
+/// Builds a locally unique id.
+///
+/// A bare timestamp is not enough: on the web `DateTime` is backed by JS `Date`
+/// and only has millisecond resolution, so two saves in the same millisecond
+/// would collide and one record would silently overwrite the other.
+String _newLocalId() {
+  final random = _idRandom.nextInt(1 << 32).toRadixString(36);
+  return '${DateTime.now().microsecondsSinceEpoch}-$random';
+}
+
 class ReachTrailController extends ChangeNotifier {
   ReachTrailController({
     required PersistenceService persistence,
     required LocalConfigService configService,
+    String Function()? sessionTokenProvider,
   }) : _persistence = persistence,
-       _configService = configService;
+       _configService = configService,
+       _sessionTokenProvider = sessionTokenProvider;
 
   final PersistenceService _persistence;
   final LocalConfigService _configService;
+  final String Function()? _sessionTokenProvider;
   PlaceSearchService? _searchService;
 
   bool isBootstrapping = true;
@@ -142,7 +167,15 @@ class ReachTrailController extends ChangeNotifier {
   String? baseSearchError;
   String? buildingSearchError;
   String placeSearchProvider = 'mock';
+  String? configErrorMessage;
   String yahooApiKey = '';
+  String yahooProxyBaseUrl = '';
+
+  /// True when live Yahoo search is reachable, either through the API proxy or
+  /// (local development only) through a directly supplied key.
+  bool get isYahooSearchEnabled =>
+      placeSearchProvider.toLowerCase() == 'yahoo' &&
+      (yahooProxyBaseUrl.isNotEmpty || yahooApiKey.isNotEmpty);
   BaseLocation? baseLocation;
   List<Place> places = const [];
   List<DineChallengeRecord> records = const [];
@@ -154,12 +187,37 @@ class ReachTrailController extends ChangeNotifier {
   Future<void> load() async {
     isBootstrapping = true;
     notifyListeners();
-    final config = await _configService.load();
-    _applyConfig(config);
+    try {
+      final config = await _configService.load();
+      _applyConfig(config);
+    } on LocalConfigException catch (error) {
+      // A misbuilt release: keep the app usable but say so rather than
+      // pretending mock search is the intended configuration.
+      _applyConfig(_fallbackConfig);
+      configErrorMessage = error.message;
+    }
     baseLocation = await _persistence.loadBaseLocation();
     places = await _persistence.loadPlaces();
     records = await _persistence.loadRecords();
     isBootstrapping = false;
+    notifyListeners();
+  }
+
+  /// Wipes every locally stored record, place and base location.
+  ///
+  /// Called from in-app account deletion, after the server-side account has
+  /// been removed.
+  Future<void> clearLocalData() async {
+    await _persistence.clearAll();
+    baseLocation = null;
+    places = const [];
+    records = const [];
+    searchResults = const [];
+    baseSearchResults = const [];
+    buildingSearchResults = const [];
+    errorMessage = null;
+    baseSearchError = null;
+    buildingSearchError = null;
     notifyListeners();
   }
 
@@ -169,16 +227,28 @@ class ReachTrailController extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _fallbackConfig = LocalConfig(
+    placeSearchProvider: 'mock',
+    yahooApiKey: '',
+    yahooProxyBaseUrl: '',
+    apiBaseUrl: '',
+    googleWebClientId: '',
+    googleMacosClientId: '',
+    googleWindowsClientId: '',
+  );
+
   void _applyConfig(LocalConfig config) {
     placeSearchProvider = config.placeSearchProvider;
     yahooApiKey = config.yahooApiKey;
+    yahooProxyBaseUrl = config.yahooProxyBaseUrl.isNotEmpty
+        ? config.yahooProxyBaseUrl
+        : (kIsWeb ? 'http://localhost:3000' : '');
     _searchService = CompositePlaceSearchService(
       SearchConfig(
         provider: placeSearchProvider,
         yahooApiKey: yahooApiKey,
-        yahooProxyBaseUrl: config.yahooProxyBaseUrl.isNotEmpty
-            ? config.yahooProxyBaseUrl
-            : (kIsWeb ? 'http://localhost:3000' : ''),
+        yahooProxyBaseUrl: yahooProxyBaseUrl,
+        sessionTokenProvider: _sessionTokenProvider,
       ),
     );
   }
@@ -196,7 +266,7 @@ class ReachTrailController extends ChangeNotifier {
     required String memo,
   }) async {
     final location = BaseLocation(
-      id: baseLocation?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      id: baseLocation?.id ?? _newLocalId(),
       name: name,
       lat: lat,
       lng: lng,
@@ -286,7 +356,7 @@ class ReachTrailController extends ChangeNotifier {
         errorMessage = '候補が見つかりません。手入力で登録できます。';
       }
     } catch (error) {
-      errorMessage = '検索に失敗しました: $error';
+      errorMessage = describeSearchFailure(error);
       searchResults = const [];
     } finally {
       isSearching = false;
@@ -309,7 +379,7 @@ class ReachTrailController extends ChangeNotifier {
         buildingSearchError = '建物候補が見つかりません。建物名や住所の一部で試してください。';
       }
     } catch (error) {
-      buildingSearchError = '建物候補検索に失敗しました: $error';
+      buildingSearchError = describeSearchFailure(error);
       buildingSearchResults = const [];
     } finally {
       isBuildingSearching = false;
@@ -332,7 +402,7 @@ class ReachTrailController extends ChangeNotifier {
         baseSearchError = '基準地点候補が見つかりません。別の建物名や住所で試してください。';
       }
     } catch (error) {
-      baseSearchError = '基準地点検索に失敗しました: $error';
+      baseSearchError = describeSearchFailure(error);
       baseSearchResults = const [];
     } finally {
       isBaseSearching = false;
@@ -384,7 +454,7 @@ class ReachTrailController extends ChangeNotifier {
     );
     final savedPlace = _upsertPlace(place);
     final record = DineChallengeRecord(
-      id: recordId ?? DateTime.now().microsecondsSinceEpoch.toString(),
+      id: recordId ?? _newLocalId(),
       baseLocationId: currentBase.id,
       placeId: savedPlace.id,
       placeSnapshot: savedPlace.toJson(),
@@ -633,9 +703,66 @@ class ReachTrailHome extends StatefulWidget {
 
 class _ReachTrailHomeState extends State<ReachTrailHome> {
   int _index = 0;
+  bool _isDeletingAccount = false;
 
   static const _desktopBreakpoint = 1080.0;
   static const _contentMaxWidth = 1280.0;
+
+  /// Google Play requires an in-app route to delete the account, so this
+  /// confirms, removes the server-side account, wipes local data, then signs
+  /// out. If the server call fails the user stays signed in and nothing local
+  /// is touched.
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    // Captured before the first await so no BuildContext crosses an async gap.
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('アカウントを削除しますか？'),
+        content: const Text(
+          'ReachTrailのサーバーに保存されているアカウント情報（Googleアカウントの識別子・'
+          'メールアドレス・表示名・アイコン）を削除します。\n\n'
+          'あわせて、この端末に保存されている基準地点・登録した店舗・チャレンジ記録も'
+          'すべて消去され、サインアウトします。\n\n'
+          'この操作は取り消せません。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('削除する'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    setState(() => _isDeletingAccount = true);
+    try {
+      await widget.authService.deleteAccount();
+      await widget.controller.clearLocalData();
+      await widget.authService.signOut();
+      messenger.showSnackBar(const SnackBar(content: Text('アカウントを削除しました。')));
+    } on AccountDeletionException catch (error) {
+      // Leave the user signed in: nothing was deleted.
+      messenger.showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('アカウント削除に失敗しました: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _isDeletingAccount = false);
+      }
+    }
+  }
 
   Widget _buildCurrentTab(ReachTrailController controller) {
     return IndexedStack(
@@ -666,13 +793,17 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
             title: const Text('ReachTrail'),
             actions: [
               if (widget.authService.currentUser case final user?)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Center(
-                    child: Text(
-                      user.displayName?.isNotEmpty == true
-                          ? user.displayName!
-                          : user.email,
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Center(
+                      child: Text(
+                        user.displayName?.isNotEmpty == true
+                            ? user.displayName!
+                            : user.email,
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
                     ),
                   ),
                 ),
@@ -680,17 +811,29 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
                 padding: const EdgeInsets.only(right: 12),
                 child: Center(
                   child: Text(
-                    controller.placeSearchProvider == 'mock' ||
-                            controller.yahooApiKey.isEmpty
-                        ? 'Mock Search'
-                        : 'Yahoo',
+                    controller.isYahooSearchEnabled ? 'Yahoo' : 'Mock Search',
                   ),
                 ),
               ),
               IconButton(
                 tooltip: 'Sign out',
-                onPressed: widget.authService.signOut,
+                onPressed: _isDeletingAccount
+                    ? null
+                    : widget.authService.signOut,
                 icon: const Icon(Icons.logout),
+              ),
+              IconButton(
+                tooltip: 'アカウント削除',
+                onPressed: _isDeletingAccount
+                    ? null
+                    : () => _confirmDeleteAccount(context),
+                icon: _isDeletingAccount
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.person_remove_outlined),
               ),
             ],
           ),
@@ -856,6 +999,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     labelText: '建物名 / オフィス名 / 住所',
                     prefixIcon: Icon(Icons.apartment),
                   ),
+                  textInputAction: TextInputAction.search,
                   onSubmitted: (_) => _runBaseSearch(),
                 ),
                 Wrap(
@@ -989,28 +1133,37 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                             );
                             return;
                           }
-                          await controller.saveBaseLocation(
-                            name: _nameController.text.trim(),
-                            lat: _selectedLat!,
-                            lng: _selectedLng!,
-                            floorLabel: _floorController.text.trim(),
-                            floorNumber: parseFloorNumber(
-                              _floorController.text.trim(),
-                            ),
-                            entryFloorLabel: _entryFloorController.text.trim(),
-                            entryFloorNumber: parseFloorNumber(
-                              _entryFloorController.text.trim(),
-                            ),
-                            hasElevator: _hasElevator,
-                            elevatorRideCount: int.tryParse(
-                              _elevatorRideCountController.text.trim(),
-                            ),
-                            memo: _mergedBaseMemo,
-                          );
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await controller.saveBaseLocation(
+                              name: _nameController.text.trim(),
+                              lat: _selectedLat!,
+                              lng: _selectedLng!,
+                              floorLabel: _floorController.text.trim(),
+                              floorNumber: parseFloorNumber(
+                                _floorController.text.trim(),
+                              ),
+                              entryFloorLabel: _entryFloorController.text
+                                  .trim(),
+                              entryFloorNumber: parseFloorNumber(
+                                _entryFloorController.text.trim(),
+                              ),
+                              hasElevator: _hasElevator,
+                              elevatorRideCount: int.tryParse(
+                                _elevatorRideCountController.text.trim(),
+                              ),
+                              memo: _mergedBaseMemo,
+                            );
+                          } catch (_) {
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text(saveFailureMessage)),
+                            );
+                            return;
+                          }
                           if (!context.mounted) {
                             return;
                           }
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          messenger.showSnackBar(
                             const SnackBar(content: Text('基準地点を保存しました。')),
                           );
                         },
@@ -1078,7 +1231,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   }
 
   Future<void> _runBaseSearch() async {
-    if (_searchController.text.trim().isEmpty) {
+    // A second submit while a search is in flight would race the first.
+    if (widget.controller.isBaseSearching ||
+        _searchController.text.trim().isEmpty) {
       return;
     }
     await widget.controller.searchBaseLocations(_searchController.text.trim());
@@ -1140,6 +1295,8 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   }
 
   Future<void> _deleteBaseLocation() async {
+    // Captured before the first await so no BuildContext crosses an async gap.
+    final messenger = ScaffoldMessenger.of(context);
     final relatedRecordCount = widget.controller.records
         .where(
           (record) =>
@@ -1171,7 +1328,15 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     if (confirmed != true) {
       return;
     }
-    final deletedCount = await widget.controller.deleteBaseLocation();
+    final int deletedCount;
+    try {
+      deletedCount = await widget.controller.deleteBaseLocation();
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text(deleteFailureMessage)),
+      );
+      return;
+    }
     if (!mounted) {
       return;
     }
@@ -1187,7 +1352,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       _memoController.clear();
       _hasElevator = true;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
+    messenger.showSnackBar(
       SnackBar(
         content: Text(
           deletedCount == 0
@@ -1352,6 +1517,9 @@ class _RegisterTabState extends State<_RegisterTab> {
   void dispose() {
     _searchController.dispose();
     _buildingSearchController.dispose();
+    // FlutterMap only auto-disposes a controller it created itself, and this
+    // one is passed in, so it must be released here.
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -1375,6 +1543,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                   labelText: '店名 / カテゴリ / 住所',
                   prefixIcon: Icon(Icons.search),
                 ),
+                textInputAction: TextInputAction.search,
                 onSubmitted: (_) => _runSearch(),
               ),
               SwitchListTile(
@@ -1406,21 +1575,29 @@ class _RegisterTabState extends State<_RegisterTab> {
                   ),
                 ],
               ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('検索デバッグ表示を有効にする'),
-                subtitle: const Text('Yahoo候補の要約とraw JSONを確認します。'),
-                value: _showDebugInfo,
-                onChanged: (value) {
-                  setState(() {
-                    _showDebugInfo = value ?? false;
-                  });
-                },
-              ),
+              // Raw provider payloads are a development aid only; they never
+              // appear in a release build.
+              if (kDebugMode)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('検索デバッグ表示を有効にする'),
+                  subtitle: const Text('Yahoo候補の要約とraw JSONを確認します。'),
+                  value: _showDebugInfo,
+                  onChanged: (value) {
+                    setState(() {
+                      _showDebugInfo = value ?? false;
+                    });
+                  },
+                ),
               if (base == null)
                 const Text(
                   '先に基準地点を登録してください。',
                   style: TextStyle(color: Colors.redAccent),
+                ),
+              if (controller.configErrorMessage != null)
+                Text(
+                  controller.configErrorMessage!,
+                  style: const TextStyle(color: Colors.redAccent),
                 ),
               if (controller.errorMessage != null)
                 Text(
@@ -1455,7 +1632,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                         (place) => _PlaceResultTile(
                           place: place,
                           baseLocation: controller.baseLocation,
-                          showDebugInfo: _showDebugInfo,
+                          showDebugInfo: kDebugMode && _showDebugInfo,
                           isSelected: _selectedPlaceId == place.id,
                           onSelect: () => _selectPlace(place),
                           onUse: () => _openRecordSheet(context, place: place),
@@ -1482,7 +1659,8 @@ class _RegisterTabState extends State<_RegisterTab> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Candidate Map',
-            subtitle: 'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
+            subtitle:
+                'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
             child: SizedBox(
               height: 320,
               child: _CandidateMap(
@@ -1501,7 +1679,7 @@ class _RegisterTabState extends State<_RegisterTab> {
 
   Future<void> _runSearch() async {
     final query = _searchController.text.trim();
-    if (query.isEmpty) {
+    if (widget.controller.isSearching || query.isEmpty) {
       return;
     }
     setState(() {
@@ -1519,7 +1697,7 @@ class _RegisterTabState extends State<_RegisterTab> {
 
   Future<void> _runBuildingSearch() async {
     final query = _buildingSearchController.text.trim();
-    if (query.isEmpty) {
+    if (widget.controller.isBuildingSearching || query.isEmpty) {
       return;
     }
     await widget.controller.searchBuildingCandidates(query);
@@ -1543,23 +1721,36 @@ class _RegisterTabState extends State<_RegisterTab> {
     setState(() {
       _selectedPlaceId = place.id;
     });
-    if (moveMap) {
-      final base = widget.controller.baseLocation;
-      if (base == null) {
-        _mapController.move(latlong.LatLng(place.lat, place.lng), 16);
+    if (!moveMap) {
+      return;
+    }
+    // The candidate map is only built once results exist, so right after a
+    // search the controller is not attached yet and flutter_map throws. Wait
+    // for the frame that builds the map before moving it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
         return;
       }
-
-      _mapController.fitCamera(
-        CameraFit.bounds(
-          bounds: LatLngBounds.fromPoints([
-            latlong.LatLng(base.lat, base.lng),
-            latlong.LatLng(place.lat, place.lng),
-          ]),
-          padding: const EdgeInsets.all(56),
-        ),
-      );
-    }
+      final base = widget.controller.baseLocation;
+      try {
+        if (base == null) {
+          _mapController.move(latlong.LatLng(place.lat, place.lng), 16);
+          return;
+        }
+        _mapController.fitCamera(
+          CameraFit.bounds(
+            bounds: LatLngBounds.fromPoints([
+              latlong.LatLng(base.lat, base.lng),
+              latlong.LatLng(place.lat, place.lng),
+            ]),
+            padding: const EdgeInsets.all(56),
+          ),
+        );
+      } catch (_) {
+        // The map may have been disposed or rebuilt in the meantime; the
+        // selection itself is already applied, so there is nothing to recover.
+      }
+    });
   }
 
   Place _buildPlaceFromBuildingCandidate(Place buildingCandidate) {
@@ -1688,6 +1879,9 @@ class _PlaceResultTile extends StatelessWidget {
   }
 
   void _openDebugSheet(BuildContext context) {
+    if (!kDebugMode) {
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1744,6 +1938,7 @@ class _EmptyCandidateState extends StatelessWidget {
                   labelText: '建物名 / 住所で再検索',
                   prefixIcon: Icon(Icons.apartment_outlined),
                 ),
+                textInputAction: TextInputAction.search,
                 onSubmitted: (_) => onSearchBuilding(),
               ),
             ),
@@ -1935,15 +2130,22 @@ class _CandidateRadar extends StatelessWidget {
                             return Positioned(
                               left: node.position.dx - 28,
                               top: node.position.dy - 28,
-                              child: GestureDetector(
-                                onTap: () => onSelectPlace(node.place),
-                                child: _RadarBlip(
-                                  place: node.place,
-                                  distanceMeters: node.distanceMeters,
-                                  isSelected: selectedPlaceId == node.place.id,
-                                  showLabel:
-                                      selectedPlaceId == node.place.id ||
-                                      node.isPrimaryInCluster,
+                              child: Semantics(
+                                button: true,
+                                selected: selectedPlaceId == node.place.id,
+                                label: node.place.name,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => onSelectPlace(node.place),
+                                  child: _RadarBlip(
+                                    place: node.place,
+                                    distanceMeters: node.distanceMeters,
+                                    isSelected:
+                                        selectedPlaceId == node.place.id,
+                                    showLabel:
+                                        selectedPlaceId == node.place.id ||
+                                        node.isPrimaryInCluster,
+                                  ),
                                 ),
                               ),
                             );
@@ -2164,25 +2366,32 @@ class _RadarBlip extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          width: isSelected ? 18 : 12,
-          height: isSelected ? 18 : 12,
-          decoration: BoxDecoration(
-            color: isSelected
-                ? const Color(0xFFF97316)
-                : const Color(0xFF4ADE80),
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                blurRadius: isSelected ? 20 : 12,
-                color:
-                    (isSelected
-                            ? const Color(0xFFF97316)
-                            : const Color(0xFF4ADE80))
-                        .withValues(alpha: 0.65),
+        // The dot itself is far below the 48dp minimum target, so it sits
+        // centred in a 48dp box that takes the tap.
+        SizedBox.square(
+          dimension: 48,
+          child: Center(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: isSelected ? 18 : 12,
+              height: isSelected ? 18 : 12,
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? const Color(0xFFF97316)
+                    : const Color(0xFF4ADE80),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    blurRadius: isSelected ? 20 : 12,
+                    color:
+                        (isSelected
+                                ? const Color(0xFFF97316)
+                                : const Color(0xFF4ADE80))
+                            .withValues(alpha: 0.65),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
         if (showLabel) ...[
@@ -2288,16 +2497,16 @@ class _CandidateMap extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final centerPlace = places.firstWhere(
-      (place) => place.id == selectedPlaceId,
-      orElse: () => places.first,
-    );
     final selectedPlace = places
         .where((place) => place.id == selectedPlaceId)
         .firstOrNull;
+    final centerPlace = selectedPlace ?? places.firstOrNull;
+    if (baseLocation == null && centerPlace == null) {
+      return const Center(child: Text('地図に表示できる地点がありません。'));
+    }
     final center = latlong.LatLng(
-      baseLocation?.lat ?? centerPlace.lat,
-      baseLocation?.lng ?? centerPlace.lng,
+      baseLocation?.lat ?? centerPlace!.lat,
+      baseLocation?.lng ?? centerPlace!.lng,
     );
 
     return ClipRRect(
@@ -2348,12 +2557,18 @@ class _CandidateMap extends StatelessWidget {
                     point: latlong.LatLng(place.lat, place.lng),
                     width: 140,
                     height: 64,
-                    child: GestureDetector(
-                      onTap: () => onSelectPlace(place),
-                      child: _MapMarker(
-                        label: place.name,
-                        color: const Color(0xFF0D9488),
-                        isSelected: selectedPlaceId == place.id,
+                    child: Semantics(
+                      button: true,
+                      selected: selectedPlaceId == place.id,
+                      label: place.name,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => onSelectPlace(place),
+                        child: _MapMarker(
+                          label: place.name,
+                          color: const Color(0xFF0D9488),
+                          isSelected: selectedPlaceId == place.id,
+                        ),
                       ),
                     ),
                   ),
@@ -3072,7 +3287,7 @@ class _RecordSheetState extends State<_RecordSheet> {
       context: context,
       initialTime: TimeOfDay.fromDateTime(_visitedAt),
     );
-    if (time == null) {
+    if (time == null || !mounted) {
       return;
     }
     setState(() {
@@ -3096,9 +3311,7 @@ class _RecordSheetState extends State<_RecordSheet> {
       _entranceFloorLabelController.text,
     );
     final place = Place(
-      id:
-          widget.initialPlace?.id ??
-          'manual-${DateTime.now().microsecondsSinceEpoch}',
+      id: widget.initialPlace?.id ?? 'manual-${_newLocalId()}',
       provider: widget.initialPlace?.provider ?? 'manual',
       providerPlaceId:
           widget.initialPlace?.providerPlaceId ??
@@ -3118,20 +3331,32 @@ class _RecordSheetState extends State<_RecordSheet> {
       rawPayload:
           widget.initialPlace?.rawPayload ?? jsonEncode({'source': 'manual'}),
     );
-    await widget.controller.saveRecord(
-      recordId: widget.existingRecord?.id,
-      place: place,
-      routeDistanceMeters: double.tryParse(
-        _routeDistanceController.text.trim(),
-      ),
-      visitedAt: _visitedAt,
-      timeLimitMinutes: int.parse(_timeLimitController.text.trim()),
-      dineType: _dineType,
-      menu: _menuController.text.trim(),
-      price: int.tryParse(_priceController.text.trim()),
-      paymentMethod: _paymentController.text.trim(),
-      memo: _memoController.text.trim(),
-    );
+    // Without this guard a persistence failure would leave `_submitting` true
+    // forever, freezing the sheet with no way out.
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.controller.saveRecord(
+        recordId: widget.existingRecord?.id,
+        place: place,
+        routeDistanceMeters: double.tryParse(
+          _routeDistanceController.text.trim(),
+        ),
+        visitedAt: _visitedAt,
+        timeLimitMinutes: int.parse(_timeLimitController.text.trim()),
+        dineType: _dineType,
+        menu: _menuController.text.trim(),
+        price: int.tryParse(_priceController.text.trim()),
+        paymentMethod: _paymentController.text.trim(),
+        memo: _memoController.text.trim(),
+      );
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(content: Text(saveFailureMessage)));
+      return;
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
     if (!mounted) {
       return;
     }
@@ -3321,6 +3546,13 @@ class _MapTabState extends State<_MapTab> {
   String? _selectedPlaceId;
 
   @override
+  void dispose() {
+    // Passed into FlutterMap, so it is this State's responsibility to release.
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final baseLocation = widget.controller.baseLocation;
     final entries = baseLocation == null
@@ -3428,6 +3660,8 @@ class _MapTabState extends State<_MapTab> {
   }
 
   Future<void> _deletePlaceRecords(_SharedPlaceEntry entry) async {
+    // Captured before the first await so no BuildContext crosses an async gap.
+    final messenger = ScaffoldMessenger.of(context);
     final baseLocation = widget.controller.baseLocation;
     if (baseLocation == null) {
       return;
@@ -3453,10 +3687,18 @@ class _MapTabState extends State<_MapTab> {
     if (confirmed != true) {
       return;
     }
-    final deletedCount = await widget.controller.deleteRecordsForPlace(
-      entry.place.id,
-      baseLocationId: baseLocation.id,
-    );
+    final int deletedCount;
+    try {
+      deletedCount = await widget.controller.deleteRecordsForPlace(
+        entry.place.id,
+        baseLocationId: baseLocation.id,
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text(deleteFailureMessage)),
+      );
+      return;
+    }
     if (!mounted) {
       return;
     }
@@ -3465,9 +3707,9 @@ class _MapTabState extends State<_MapTab> {
         _selectedPlaceId = null;
       }
     });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$deletedCount 件の記録を削除しました。')));
+    messenger.showSnackBar(
+      SnackBar(content: Text('$deletedCount 件の記録を削除しました。')),
+    );
   }
 }
 
@@ -3542,72 +3784,79 @@ class _MapModeTab extends StatelessWidget {
     final theme = Theme.of(context);
     final color = selected ? const Color(0xFF0F766E) : const Color(0xFF475569);
 
-    return InkWell(
-      onTap: () => onChanged(mode),
-      borderRadius: BorderRadius.circular(22),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFFE6F6F3) : Colors.white,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(
-            color: selected ? const Color(0xFF0F766E) : const Color(0xFFDED7CC),
-            width: selected ? 1.8 : 1,
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: InkWell(
+        onTap: () => onChanged(mode),
+        borderRadius: BorderRadius.circular(22),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFFE6F6F3) : Colors.white,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: selected
+                  ? const Color(0xFF0F766E)
+                  : const Color(0xFFDED7CC),
+              width: selected ? 1.8 : 1,
+            ),
+            boxShadow: [
+              if (selected)
+                BoxShadow(
+                  color: const Color(0xFF0F766E).withValues(alpha: 0.16),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
+                ),
+            ],
           ),
-          boxShadow: [
-            if (selected)
-              BoxShadow(
-                color: const Color(0xFF0F766E).withValues(alpha: 0.16),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
-          ],
-        ),
-        child: Row(
-          children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: selected
-                    ? const Color(0xFF0F766E)
-                    : const Color(0xFFF8F4EA),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Icon(
-                  selected ? Icons.check_circle : icon,
-                  color: selected ? Colors.white : color,
-                  size: 24,
+          child: Row(
+            children: [
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: selected
+                      ? const Color(0xFF0F766E)
+                      : const Color(0xFFF8F4EA),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Icon(
+                    selected ? Icons.check_circle : icon,
+                    color: selected ? Colors.white : color,
+                    size: 24,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 2,
-                children: [
-                  Text(
-                    label,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      color: color,
-                      fontWeight: FontWeight.w800,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 2,
+                  children: [
+                    Text(
+                      label,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: color,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
-                  Text(
-                    description,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: selected
-                          ? const Color(0xFF0F766E)
-                          : const Color(0xFF64748B),
+                    Text(
+                      description,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: selected
+                            ? const Color(0xFF0F766E)
+                            : const Color(0xFF64748B),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -3712,7 +3961,9 @@ class _NearbySharedView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Text('近くの共有は今後追加予定です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示できるようになります。');
+    return const Text(
+      '近くの共有は今後追加予定です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示できるようになります。',
+    );
   }
 }
 
@@ -3734,6 +3985,18 @@ class _SharedPlaceMapOverview extends StatelessWidget {
   final ValueChanged<_SharedPlaceEntry> onSelectEntry;
   final ValueChanged<DineChallengeRecord> onEditRecord;
   final ValueChanged<_SharedPlaceEntry> onDeletePlaceRecords;
+
+  /// Ignores a tap whose place has already left [entries] instead of throwing
+  /// out of `firstWhere`.
+  void _selectEntryForPlace(Place place) {
+    final entry = entries
+        .where((item) => item.place.id == place.id)
+        .firstOrNull;
+    if (entry == null) {
+      return;
+    }
+    onSelectEntry(entry);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3762,9 +4025,7 @@ class _SharedPlaceMapOverview extends StatelessWidget {
                 baseLocation: baseLocation,
                 places: places,
                 selectedPlaceId: selectedPlaceId,
-                onSelectPlace: (place) => onSelectEntry(
-                  entries.firstWhere((entry) => entry.place.id == place.id),
-                ),
+                onSelectPlace: (place) => _selectEntryForPlace(place),
               ),
             );
             final radar = SizedBox(
@@ -3773,9 +4034,7 @@ class _SharedPlaceMapOverview extends StatelessWidget {
                 baseLocation: baseLocation,
                 places: places,
                 selectedPlaceId: selectedPlaceId,
-                onSelectPlace: (place) => onSelectEntry(
-                  entries.firstWhere((entry) => entry.place.id == place.id),
-                ),
+                onSelectPlace: (place) => _selectEntryForPlace(place),
               ),
             );
 
@@ -4114,11 +4373,19 @@ class _RecordsTab extends StatelessWidget {
                     onPressed: controller.records.isEmpty
                         ? null
                         : () async {
-                            final count = await controller.recalculateScores();
-                            if (!context.mounted) {
+                            final messenger = ScaffoldMessenger.of(context);
+                            final int count;
+                            try {
+                              count = await controller.recalculateScores();
+                            } catch (_) {
+                              messenger.showSnackBar(
+                                const SnackBar(
+                                  content: Text(saveFailureMessage),
+                                ),
+                              );
                               return;
                             }
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            messenger.showSnackBar(
                               SnackBar(
                                 content: Text(
                                   count == 0
@@ -4206,13 +4473,19 @@ class _RecordsTab extends StatelessWidget {
     if (confirmed != true) {
       return;
     }
-    await controller.deleteRecord(record.id);
     if (!context.mounted) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('記録を削除しました。')));
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await controller.deleteRecord(record.id);
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text(deleteFailureMessage)),
+      );
+      return;
+    }
+    messenger.showSnackBar(const SnackBar(content: Text('記録を削除しました。')));
   }
 }
 
@@ -4334,10 +4607,14 @@ class _BestRecordTile extends StatelessWidget {
             const Icon(Icons.workspace_premium),
             const SizedBox(width: 12),
             Expanded(
+              // A long store name must not push the trailing metric off the
+              // row; it wraps to two lines and then ellipsises.
               child: record == null
                   ? Text('$label: まだ記録なし')
                   : Text(
                       '$label: ${Place.fromJson(record!.placeSnapshot).name}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
             ),
             if (record != null) Text(metricBuilder(record!)),
@@ -4370,7 +4647,11 @@ class _BestPlaceTile extends StatelessWidget {
             Expanded(
               child: entry == null
                   ? Text('$label: まだ記録なし')
-                  : Text('$label: ${entry!.placeName}'),
+                  : Text(
+                      '$label: ${entry!.placeName}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
             ),
             if (entry != null) Text('${entry!.count} 回'),
           ],

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -363,4 +365,131 @@ void main() {
       expect(results, isEmpty);
     },
   );
+
+  test('yahoo search treats an unexpected 200 body as zero results', () async {
+    final client = MockClient(
+      (_) async => http.Response(
+        '<html>maintenance</html>',
+        200,
+        headers: {'content-type': 'text/html'},
+      ),
+    );
+
+    final results = await YahooLocalSearchService(
+      'dummy',
+      proxyBaseUrl: 'https://example.com/yahoo/localSearch',
+      client: client,
+    ).search(query: 'カフェ', baseLocation: null, nearbyOnly: false);
+
+    expect(results, isEmpty);
+  });
+
+  test(
+    'yahoo search treats a JSON body without Feature as zero results',
+    () async {
+      final client = MockClient(
+        (_) async => http.Response(
+          '{"ResultInfo":{"Count":0}}',
+          200,
+          headers: {'content-type': 'application/json'},
+        ),
+      );
+
+      final results = await YahooLocalSearchService(
+        'dummy',
+        proxyBaseUrl: 'https://example.com/yahoo/localSearch',
+        client: client,
+      ).search(query: 'カフェ', baseLocation: null, nearbyOnly: false);
+
+      expect(results, isEmpty);
+    },
+  );
+
+  test('search failures map to short Japanese messages', () {
+    expect(
+      describeSearchFailure(TimeoutException('timeout')),
+      '通信に失敗しました。電波状況を確認して再試行してください。',
+    );
+    expect(
+      describeSearchFailure(http.ClientException('connection reset')),
+      '通信に失敗しました。電波状況を確認して再試行してください。',
+    );
+    expect(
+      describeSearchFailure(
+        const PlaceSearchConfigurationException('ログインの有効期限が切れました。'),
+      ),
+      'ログインの有効期限が切れました。',
+    );
+    expect(
+      describeSearchFailure(StateError('boom')),
+      '検索に失敗しました。しばらく待ってから再試行してください。',
+    );
+    expect(describeSearchFailure(StateError('boom')), isNot(contains('boom')));
+  });
+
+  test('yahoo proxy 401 and 429 surface typed Japanese messages', () async {
+    Future<void> expectMessage(int status, Matcher matcher) async {
+      final client = MockClient((_) async => http.Response('{}', status));
+      await expectLater(
+        YahooLocalSearchService(
+          'dummy',
+          proxyBaseUrl: 'https://example.com/yahoo/localSearch',
+          client: client,
+        ).search(query: 'カフェ', baseLocation: null, nearbyOnly: false),
+        throwsA(
+          isA<PlaceSearchConfigurationException>().having(
+            (error) => error.message,
+            'message',
+            matcher,
+          ),
+        ),
+      );
+    }
+
+    await expectMessage(401, contains('サインイン'));
+    await expectMessage(429, contains('しばらく'));
+  });
+
+  test('base location with missing or non-numeric coordinates is rejected', () {
+    expect(
+      () => BaseLocation.fromJson(const {'id': 'a', 'name': 'Office'}),
+      throwsFormatException,
+    );
+    expect(
+      () => BaseLocation.fromJson(const {
+        'id': 'a',
+        'name': 'Office',
+        'lat': 'not-a-number',
+        'lng': 139.7,
+      }),
+      throwsFormatException,
+    );
+    final valid = BaseLocation.fromJson(const {
+      'id': 'a',
+      'name': 'Office',
+      'lat': '35.68',
+      'lng': 139.76,
+    });
+    expect(valid.lat, closeTo(35.68, 1e-9));
+    expect(valid.lng, closeTo(139.76, 1e-9));
+  });
+
+  test('record with an unparseable visitedAt is rejected', () {
+    expect(
+      () => DineChallengeRecord.fromJson(const {
+        'id': 'r1',
+        'visitedAt': 'yesterday',
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => DineChallengeRecord.fromJson(const {'id': 'r1'}),
+      throwsFormatException,
+    );
+    final valid = DineChallengeRecord.fromJson(const {
+      'id': 'r1',
+      'visitedAt': '2026-01-02T03:04:05Z',
+    });
+    expect(valid.visitedAt.toUtc().year, 2026);
+  });
 }
