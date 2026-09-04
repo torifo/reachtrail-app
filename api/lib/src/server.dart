@@ -171,6 +171,17 @@ class ReachTrailUserStore {
     return updated;
   }
 
+  /// Removes the user with [id]. Returns true when a user was actually deleted.
+  Future<bool> deleteById(String id) async {
+    final users = await loadAll();
+    final remaining = users.where((user) => user.id != id).toList();
+    if (remaining.length == users.length) {
+      return false;
+    }
+    await _writeAll(remaining);
+    return true;
+  }
+
   Future<void> _writeAll(List<ReachTrailUser> users) async {
     final file = File(path);
     await file.parent.create(recursive: true);
@@ -295,6 +306,110 @@ class SessionTokenIssuer {
   }
 }
 
+/// Verifies the HS256 session tokens minted by [SessionTokenIssuer].
+class SessionTokenVerifier {
+  SessionTokenVerifier(this.secret);
+
+  final String secret;
+
+  /// Returns the token claims, or throws [AuthException] when the signature,
+  /// structure, or expiry is not acceptable.
+  Future<Map<String, dynamic>> verify(String token) async {
+    final trimmed = token.trim();
+    if (trimmed.isEmpty) {
+      throw const AuthException('Session token is required.');
+    }
+
+    final JsonWebToken jwt;
+    try {
+      jwt = JsonWebToken.unverified(trimmed);
+    } catch (_) {
+      throw const AuthException('Session token is malformed.');
+    }
+
+    final keyStore = JsonWebKeyStore()..addKey(_key());
+    final bool verified;
+    try {
+      // Pinning the algorithm keeps an attacker from downgrading to `none`.
+      verified = await jwt.verify(keyStore, allowedArguments: ['HS256']);
+    } catch (_) {
+      throw const AuthException('Session token signature is invalid.');
+    }
+    if (!verified) {
+      throw const AuthException('Session token signature is invalid.');
+    }
+
+    final claims = jwt.claims.toJson();
+
+    final expiry = claims['exp'];
+    if (expiry is! num) {
+      throw const AuthException('Session token has no expiry.');
+    }
+    final expiresAt = DateTime.fromMillisecondsSinceEpoch(
+      expiry.toInt() * 1000,
+      isUtc: true,
+    );
+    if (!expiresAt.isAfter(DateTime.now().toUtc())) {
+      throw const AuthException('Session token has expired.');
+    }
+
+    final subject = '${claims['sub'] ?? ''}';
+    if (subject.isEmpty) {
+      throw const AuthException('Session token has no subject.');
+    }
+
+    return claims;
+  }
+
+  JsonWebKey _key() {
+    return JsonWebKey.fromJson({
+      'kty': 'oct',
+      'k': base64UrlEncode(utf8.encode(secret)).replaceAll('=', ''),
+    });
+  }
+}
+
+/// Fixed-window, in-memory request limiter keyed by user id.
+///
+/// The proxy is the only endpoint behind it, so per-process counting is enough
+/// to stop a single credential from being used to hammer the upstream API.
+class RateLimiter {
+  RateLimiter({
+    this.maxRequests = 60,
+    this.window = const Duration(minutes: 1),
+  });
+
+  final int maxRequests;
+  final Duration window;
+  final Map<String, _RateWindow> _windows = {};
+
+  /// Returns true when the call is allowed, false when the caller is over quota.
+  bool allow(String key, {DateTime? now}) {
+    final at = (now ?? DateTime.now()).toUtc();
+    _windows.removeWhere(
+      (_, value) => at.difference(value.startedAt) >= window,
+    );
+
+    final current = _windows[key];
+    if (current == null || at.difference(current.startedAt) >= window) {
+      _windows[key] = _RateWindow(startedAt: at, count: 1);
+      return true;
+    }
+    if (current.count >= maxRequests) {
+      return false;
+    }
+    current.count++;
+    return true;
+  }
+}
+
+class _RateWindow {
+  _RateWindow({required this.startedAt, required this.count});
+
+  final DateTime startedAt;
+  int count;
+}
+
 class AuthException implements Exception {
   const AuthException(this.message);
 
@@ -311,6 +426,44 @@ Handler buildHandler(ReachTrailApiConfig config) {
     allowedClientIds: config.googleClientIds,
   );
   final sessionIssuer = SessionTokenIssuer(config.sessionSecret);
+  final sessionVerifier = SessionTokenVerifier(config.sessionSecret);
+  final rateLimiter = RateLimiter();
+
+  /// Resolves the caller's user id from the bearer token, or null when the
+  /// request is not authenticated.
+  Future<String?> authenticate(Request request) async {
+    final header = request.headers['authorization'] ?? '';
+    if (!header.toLowerCase().startsWith('bearer ')) {
+      return null;
+    }
+    try {
+      final claims = await sessionVerifier.verify(header.substring(7));
+      final subject = '${claims['sub'] ?? ''}';
+      return subject.isEmpty ? null : subject;
+    } on AuthException {
+      return null;
+    }
+  }
+
+  Future<Response> deleteMe(Request request) async {
+    final userId = await authenticate(request);
+    if (userId == null) {
+      return _jsonResponse(401, {
+        'error': 'A valid session token is required.',
+      });
+    }
+    try {
+      await userStore.deleteById(userId);
+      // 204 whether or not a row existed: the account is gone either way.
+      return Response(204);
+    } catch (error) {
+      stderr.writeln(error);
+      return _jsonResponse(500, {'error': 'Internal server error.'});
+    }
+  }
+
+  router.delete('/me', deleteMe);
+  router.post('/me/delete', deleteMe);
 
   router.get('/health', (Request request) {
     return Response.ok(
@@ -360,6 +513,20 @@ Handler buildHandler(ReachTrailApiConfig config) {
   });
 
   router.get('/yahoo/localSearch', (Request request) async {
+    // The proxy spends our upstream quota, so it must never be open: require a
+    // valid session and cap how fast any one account can use it.
+    final userId = await authenticate(request);
+    if (userId == null) {
+      return _jsonResponse(401, {
+        'error': 'A valid session token is required.',
+      });
+    }
+    if (!rateLimiter.allow(userId)) {
+      return _jsonResponse(429, {
+        'error': 'Too many search requests. Please retry in a minute.',
+      });
+    }
+
     if (config.yahooApiKey.isEmpty) {
       return _jsonResponse(500, {'error': 'YAHOO_API_KEY is not configured.'});
     }
@@ -378,7 +545,7 @@ Handler buildHandler(ReachTrailApiConfig config) {
   });
 
   final pipeline = const Pipeline()
-      .addMiddleware(logRequests())
+      .addMiddleware(_logPathOnly())
       .addMiddleware(_cors(config.allowedOrigins));
 
   return pipeline.addHandler(router.call);
@@ -397,7 +564,7 @@ Middleware _cors(Set<String> allowedOrigins) {
           '',
           headers: {
             'access-control-allow-origin': allowOrigin,
-            'access-control-allow-methods': 'GET, POST, OPTIONS',
+            'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
             'access-control-allow-headers': 'content-type, authorization',
             'access-control-allow-credentials': 'true',
           },
@@ -409,7 +576,7 @@ Middleware _cors(Set<String> allowedOrigins) {
         headers: {
           ...response.headers,
           'access-control-allow-origin': allowOrigin,
-          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
           'access-control-allow-headers': 'content-type, authorization',
           'access-control-allow-credentials': 'true',
         },
@@ -432,4 +599,25 @@ Future<HttpServer> runServer(ReachTrailApiConfig config) {
     InternetAddress.anyIPv4,
     config.port,
   );
+}
+
+/// Access log that records method, path, status and duration only.
+///
+/// The default [logRequests] middleware prints the full request URL, which for
+/// the search proxy contains the user's query and base-location coordinates.
+/// The privacy policy promises the proxy does not retain search content, so
+/// the query string is deliberately left out.
+Middleware _logPathOnly() {
+  return (Handler inner) {
+    return (Request request) async {
+      final started = DateTime.now();
+      final response = await inner(request);
+      final elapsed = DateTime.now().difference(started).inMilliseconds;
+      stdout.writeln(
+        '${started.toIso8601String()} ${request.method} '
+        '/${request.url.path} ${response.statusCode} ${elapsed}ms',
+      );
+      return response;
+    };
+  };
 }
