@@ -12,6 +12,11 @@ class PersistenceService {
   static const _placesKey = 'places';
   static const _recordsKey = 'records';
 
+  /// Identifies whose data the three keys above hold, so signing in with a
+  /// different Google account can wipe the previous user's records instead of
+  /// silently presenting them as the new user's own.
+  static const _lastUserIdKey = 'last_user_id';
+
   /// Cached instance so each read/write does not re-enter the platform channel.
   Future<SharedPreferences>? _prefsFuture;
 
@@ -46,6 +51,20 @@ class PersistenceService {
   Future<void> deleteBaseLocation() async {
     final prefs = await _prefs();
     await prefs.remove(_baseLocationKey);
+  }
+
+  Future<String?> loadLastUserId() async {
+    final prefs = await _prefs();
+    final value = prefs.getString(_lastUserIdKey);
+    if (value == null || value.isEmpty) {
+      return null;
+    }
+    return value;
+  }
+
+  Future<void> saveLastUserId(String userId) async {
+    final prefs = await _prefs();
+    await prefs.setString(_lastUserIdKey, userId);
   }
 
   Future<List<Place>> loadPlaces() async {
@@ -85,6 +104,7 @@ class PersistenceService {
     await prefs.remove(_baseLocationKey);
     await prefs.remove(_placesKey);
     await prefs.remove(_recordsKey);
+    await prefs.remove(_lastUserIdKey);
   }
 
   /// Decodes a stored JSON list, skipping any single entry that fails to parse
