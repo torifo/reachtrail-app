@@ -69,6 +69,118 @@ class SignedInUserTracker {
   }
 }
 
+/// What the account menu can do; kept public so tests can name the entries.
+enum AccountMenuAction { signOut, switchAccount, deleteAccount }
+
+/// Shows the confirmation that precedes a switch to another Google account.
+///
+/// Returns true when the user chose to go ahead.
+Future<bool?> showSwitchAccountConfirmation(BuildContext context) {
+  return showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('アカウントを切り替えますか？'),
+      content: const Text(
+        '別の Google アカウントでサインインします。'
+        '別のアカウントに切り替えた場合、この端末に保存されている基準地点・店舗・記録は'
+        '消去されます（同じアカウントを選び直した場合は残ります）。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('切り替える'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// The single account entry point in the app bar.
+///
+/// Sign-out, switching accounts and deletion all act on the same thing, so
+/// they share one avatar-shaped menu instead of competing for toolbar space.
+class AccountMenuButton extends StatelessWidget {
+  const AccountMenuButton({
+    super.key,
+    required this.onSignOut,
+    required this.onSwitchAccount,
+    required this.onDeleteAccount,
+    this.photoUrl,
+    this.enabled = true,
+  });
+
+  final VoidCallback onSignOut;
+  final VoidCallback onSwitchAccount;
+  final VoidCallback onDeleteAccount;
+
+  /// The signed-in user's Google avatar, when there is one.
+  final String? photoUrl;
+
+  /// False while an account operation is already running.
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final photo = photoUrl;
+    return PopupMenuButton<AccountMenuAction>(
+      tooltip: 'アカウント',
+      enabled: enabled,
+      icon: photo != null && photo.isNotEmpty
+          ? CircleAvatar(
+              radius: 14,
+              backgroundImage: NetworkImage(photo),
+              // A broken avatar must not take the menu down with it.
+              onBackgroundImageError: (_, _) {},
+            )
+          : const Icon(Icons.account_circle),
+      onSelected: (action) {
+        switch (action) {
+          case AccountMenuAction.signOut:
+            onSignOut();
+          case AccountMenuAction.switchAccount:
+            onSwitchAccount();
+          case AccountMenuAction.deleteAccount:
+            onDeleteAccount();
+        }
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: AccountMenuAction.signOut,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.logout),
+            title: Text('サインアウト'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: AccountMenuAction.switchAccount,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.switch_account_outlined),
+            title: Text('アカウントを切り替える'),
+          ),
+        ),
+        // Deletion is irreversible, so it is fenced off from the two
+        // recoverable actions above it.
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: AccountMenuAction.deleteAccount,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.person_remove_outlined, color: errorColor),
+            title: Text('アカウントを削除', style: TextStyle(color: errorColor)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _ReachTrailAppState extends State<ReachTrailApp> {
   late final ReachTrailController _controller;
   late final GoogleAuthService _authService;
@@ -943,6 +1055,26 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
     await widget.authService.signOut();
   }
 
+  /// Signs out and immediately reopens Google's account chooser.
+  ///
+  /// Nothing local is wiped here: [SignedInUserTracker] and
+  /// [ReachTrailController.adoptUser] already clear the store when the id that
+  /// signs back in differs, and keep it when the same account returns.
+  Future<void> _confirmSwitchAccount() async {
+    final confirmed = await showSwitchAccountConfirmation(context);
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    // Revoking the grant is what makes the chooser appear; without it Google
+    // hands back the account the user is trying to leave.
+    await widget.authService.signOut(forgetAccount: true);
+    if (!mounted) {
+      return;
+    }
+    // A cancelled sign-in simply leaves the app on the sign-in screen.
+    await widget.authService.signIn();
+  }
+
   bool get _needsReauthentication =>
       widget.controller.sessionExpired || widget.authService.sessionExpired;
 
@@ -1094,13 +1226,8 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                       ),
                     ),
                   ),
-                IconButton(
-                  tooltip: 'サインアウト',
-                  onPressed: _isDeletingAccount ? null : _confirmSignOut,
-                  icon: const Icon(Icons.logout),
-                ),
-                // Account deletion is irreversible, so it lives behind the
-                // overflow menu rather than one pixel away from sign-out.
+                // Everything that acts on the account sits in one place, so
+                // the user does not have to guess which icon owns which verb.
                 if (_isDeletingAccount)
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16),
@@ -1111,26 +1238,14 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
                     ),
-                  )
-                else
-                  PopupMenuButton<String>(
-                    tooltip: 'その他',
-                    onSelected: (value) {
-                      if (value == 'delete-account') {
-                        _confirmDeleteAccount(context);
-                      }
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
-                        value: 'delete-account',
-                        child: ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(Icons.person_remove_outlined),
-                          title: Text('アカウント削除'),
-                        ),
-                      ),
-                    ],
                   ),
+                AccountMenuButton(
+                  photoUrl: widget.authService.currentUser?.photoUrl,
+                  enabled: !_isDeletingAccount,
+                  onSignOut: _confirmSignOut,
+                  onSwitchAccount: _confirmSwitchAccount,
+                  onDeleteAccount: () => _confirmDeleteAccount(context),
+                ),
               ],
             ),
             body: isDesktop

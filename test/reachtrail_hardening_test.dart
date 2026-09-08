@@ -251,6 +251,18 @@ void main() {
       expect(tracker.nextUserToAdopt('user-1'), 'user-1');
     });
 
+    test('switching accounts adopts whichever account signs back in', () async {
+      final tracker = SignedInUserTracker();
+
+      expect(tracker.nextUserToAdopt('user-1'), 'user-1');
+      // "Switch account" is a sign-out followed by an interactive sign-in.
+      expect(tracker.nextUserToAdopt(null), isNull);
+      // A different account must be adopted, which is what wipes local data.
+      expect(tracker.nextUserToAdopt('user-2'), 'user-2');
+      // Picking the same account again after a switch keeps the data.
+      expect(tracker.nextUserToAdopt('user-2'), isNull);
+    });
+
     test('adopting after a wipe writes the account id again', () async {
       final persistence = PersistenceService();
       await persistence.saveLastUserId('user-1');

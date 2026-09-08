@@ -340,7 +340,13 @@ class GoogleAuthService extends ChangeNotifier {
     }
   }
 
-  Future<void> signOut() async {
+  /// Signs the user out.
+  ///
+  /// With [forgetAccount] the app's grant is revoked as well, which is what
+  /// makes the next [signIn] show Google's account chooser: a plain sign-out
+  /// leaves the previous account remembered, so switching accounts would hand
+  /// the user the very account they were trying to leave.
+  Future<void> signOut({bool forgetAccount = false}) async {
     errorMessage = null;
     _sessionGeneration++;
     currentUser = null;
@@ -350,7 +356,12 @@ class GoogleAuthService extends ChangeNotifier {
     notifyListeners();
     await _clearCachedSession();
     try {
-      await _signIn.signOut();
+      if (forgetAccount) {
+        // disconnect() signs out too, so this is not an extra signOut() call.
+        await _signIn.disconnect();
+      } else {
+        await _signIn.signOut();
+      }
       currentUser = null;
     } on GoogleSignInException catch (error) {
       errorMessage = _mapGoogleError(error);
