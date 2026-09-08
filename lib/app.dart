@@ -40,6 +40,10 @@ const String searchUnavailableMessage = '検索を初期化できませんでし
 /// The package id used as the OpenStreetMap tile-server user agent.
 const String tileUserAgentPackageName = 'net.riumu.reachtrail';
 
+/// Identifies the tap-to-pick map so a widget test can drive its `onTap`
+/// without synthesising a gesture against real map tiles.
+const Key locationPickerMapKey = Key('location-picker-map');
+
 class ReachTrailApp extends StatefulWidget {
   const ReachTrailApp({super.key});
 
@@ -278,6 +282,15 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
               backgroundColor: Color(0xFFF3EEE2),
               surfaceTintColor: Colors.transparent,
               scrolledUnderElevation: 0,
+            ),
+            // Floating, so a notice never sits flush against the navigation
+            // bar and swallows the tab it covers.
+            snackBarTheme: SnackBarThemeData(
+              behavior: SnackBarBehavior.floating,
+              insetPadding: const EdgeInsets.all(16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
             cardTheme: CardThemeData(
               color: Colors.white.withValues(alpha: 0.88),
@@ -2190,10 +2203,6 @@ class _BaseLocationPickerMap extends StatelessWidget {
   final latlong.LatLng? fallbackCenter;
   final double height;
 
-  /// Lets a widget test drive the picker without synthesising a map gesture.
-  @visibleForTesting
-  static const Key mapKey = Key('location-picker-map');
-
   @override
   Widget build(BuildContext context) {
     final selectedPoint = lat == null || lng == null
@@ -2217,7 +2226,7 @@ class _BaseLocationPickerMap extends StatelessWidget {
             child: _MapReloadable(
               reloadLabel: reloadLabel,
               builder: (context) => FlutterMap(
-                key: mapKey,
+                key: locationPickerMapKey,
                 options: MapOptions(
                   initialCenter: center,
                   initialZoom: selectedPoint == null
@@ -2241,8 +2250,10 @@ class _BaseLocationPickerMap extends StatelessWidget {
                       markers: [
                         Marker(
                           point: selectedPoint,
-                          width: 120,
-                          height: 56,
+                          // Tall enough for the selected marker's larger pin;
+                          // 56 clipped it by a few pixels.
+                          width: 140,
+                          height: 64,
                           child: _MapMarker(
                             label: markerLabel,
                             color: const Color(0xFF1D4ED8),
@@ -2535,6 +2546,9 @@ class _RegisterTabState extends State<_RegisterTab> {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
+      // The sheet can reach the status bar; without this its header would sit
+      // under the clock and the ✕ would be hard to hit.
+      useSafeArea: true,
       // Dragging the sheet away would skip the unsaved-changes confirmation,
       // which the close button and the back gesture both honour.
       enableDrag: false,
@@ -2764,6 +2778,9 @@ class _PlaceResultTile extends StatelessWidget {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      // The sheet can reach the status bar; without this its header would sit
+      // under the clock and the ✕ would be hard to hit.
+      useSafeArea: true,
       builder: (context) => _YahooDebugSheet(place: place),
     );
   }
@@ -3816,12 +3833,29 @@ class _RecordSheetState extends State<RecordSheet> {
   DateTime _visitedAt = DateTime.now();
   bool _submitting = false;
 
-  /// Set once the user has typed or picked anything, so closing the sheet by
-  /// accident cannot throw the entry away without asking.
+  /// Set once the user has actually *changed* something, so closing the sheet
+  /// by accident cannot throw the entry away without asking.
+  ///
+  /// Compared against a snapshot rather than latched on the first listener
+  /// callback: focusing a field or moving the caret fires the controller's
+  /// listeners without editing anything, and used to arm the discard prompt on
+  /// a form the user had not touched.
   bool _isDirty = false;
+  late final List<String> _initialTexts;
+  late final DineType _initialDineType;
+  late final DateTime _initialVisitedAt;
+  late final bool _initialHasElevator;
   bool _hasElevator = true;
   late bool _showPlaceDetails;
   late bool _showVisitDetails;
+
+  /// Anchors used to scroll a section back into view once it expands.
+  final _visitDetailsKey = GlobalKey();
+  final _placeDetailsKey = GlobalKey();
+
+  /// Coordinates are normally set by tapping the picker map; the raw fields
+  /// stay collapsed for the rare case that needs them.
+  bool _showRawCoordinates = false;
 
   @override
   void initState() {
@@ -3895,8 +3929,15 @@ class _RecordSheetState extends State<RecordSheet> {
     ]) {
       controller.addListener(_refreshRequiredStatus);
     }
+    _initialTexts = [
+      for (final controller in _editableControllers) controller.text,
+    ];
+    _initialDineType = _dineType;
+    _initialVisitedAt = _visitedAt;
+    _initialHasElevator = _hasElevator;
+
     for (final controller in _editableControllers) {
-      controller.addListener(_markDirty);
+      controller.addListener(_recheckDirty);
     }
   }
 
@@ -3918,23 +3959,37 @@ class _RecordSheetState extends State<RecordSheet> {
     _timeLimitController,
   ];
 
-  void _markDirty() {
-    if (_isDirty) {
+  /// True when anything on the form differs from what it opened with.
+  bool get _hasChanges {
+    final controllers = _editableControllers;
+    for (var i = 0; i < controllers.length; i++) {
+      if (controllers[i].text != _initialTexts[i]) {
+        return true;
+      }
+    }
+    return _dineType != _initialDineType ||
+        _visitedAt != _initialVisitedAt ||
+        _hasElevator != _initialHasElevator;
+  }
+
+  void _recheckDirty() {
+    final dirty = _hasChanges;
+    if (dirty == _isDirty) {
       return;
     }
-    // Without a rebuild the PopScope keeps its stale `canPop: true` and the
-    // back gesture discards the entry without asking.
+    // Without a rebuild the PopScope keeps its stale `canPop` and the back
+    // gesture discards the entry without asking.
     if (mounted) {
-      setState(() => _isDirty = true);
+      setState(() => _isDirty = dirty);
     } else {
-      _isDirty = true;
+      _isDirty = dirty;
     }
   }
 
   @override
   void dispose() {
     for (final controller in _editableControllers) {
-      controller.removeListener(_markDirty);
+      controller.removeListener(_recheckDirty);
     }
     _nameController.dispose();
     _addressController.dispose();
@@ -4002,16 +4057,21 @@ class _RecordSheetState extends State<RecordSheet> {
         }
         unawaited(_close());
       },
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 20,
-          bottom: viewInsets.bottom + 20,
-        ),
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
+      // The sheet can reach the top of the screen, where the status bar would
+      // otherwise sit over the title and the ✕.
+      child: SafeArea(
+        top: true,
+        bottom: false,
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: viewInsets.bottom + 20,
+          ),
+          child: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -4023,7 +4083,6 @@ class _RecordSheetState extends State<RecordSheet> {
                       : widget.initialPlace == null
                       ? '手入力で記録'
                       : '候補から記録',
-                  missingRequiredLabels: missingRequiredLabels,
                   onClose: _close,
                 ),
                 TextFormField(
@@ -4032,13 +4091,18 @@ class _RecordSheetState extends State<RecordSheet> {
                   validator: _required,
                 ),
                 _RecordSheetSection(
+                  key: _placeDetailsKey,
                   title: 'お店の詳細',
                   subtitle: _showPlaceDetails
                       ? '位置、階数、移動負荷を確認できます。'
                       : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
                   expanded: _showPlaceDetails,
-                  onExpansionChanged: (value) =>
-                      setState(() => _showPlaceDetails = value),
+                  onExpansionChanged: (value) {
+                    setState(() => _showPlaceDetails = value);
+                    if (value) {
+                      _revealSection(_placeDetailsKey);
+                    }
+                  },
                   children: [_buildPlaceDetailsFields()],
                 ),
                 Wrap(
@@ -4049,8 +4113,8 @@ class _RecordSheetState extends State<RecordSheet> {
                       label: Text(type == DineType.dineIn ? '店内飲食' : 'テイクアウト'),
                       selected: _dineType == type,
                       onSelected: (_) {
-                        _markDirty();
                         setState(() => _dineType = type);
+                        _recheckDirty();
                       },
                     );
                   }).toList(),
@@ -4081,11 +4145,16 @@ class _RecordSheetState extends State<RecordSheet> {
                   ],
                 ),
                 _RecordSheetSection(
+                  key: _visitDetailsKey,
                   title: '食事メモ',
                   subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
                   expanded: _showVisitDetails,
-                  onExpansionChanged: (value) =>
-                      setState(() => _showVisitDetails = value),
+                  onExpansionChanged: (value) {
+                    setState(() => _showVisitDetails = value);
+                    if (value) {
+                      _revealSection(_visitDetailsKey);
+                    }
+                  },
                   children: [_buildVisitDetailsFields()],
                 ),
                 _RecordSaveBar(
@@ -4095,12 +4164,33 @@ class _RecordSheetState extends State<RecordSheet> {
                   missingRequiredLabels: missingRequiredLabels,
                   onSubmit: _submitting || !_canSubmit ? null : _submit,
                 ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  /// Brings a section the user just opened back into view.
+  ///
+  /// An expansion near the bottom of the sheet otherwise unfolds entirely
+  /// below the fold, so the tap appears to have done nothing.
+  void _revealSection(GlobalKey key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final sectionContext = key.currentContext;
+      if (sectionContext == null) {
+        return;
+      }
+      unawaited(
+        Scrollable.ensureVisible(
+          sectionContext,
+          duration: const Duration(milliseconds: 250),
+          alignment: 0.1,
+        ),
+      );
+    });
   }
 
   Future<void> _close() async {
@@ -4118,6 +4208,11 @@ class _RecordSheetState extends State<RecordSheet> {
     final discard = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        // Sized down rather than shortened: at the default dialog title size
+        // this question wraps in the middle of a word.
+        titleTextStyle: Theme.of(
+          dialogContext,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
         title: const Text('入力内容を破棄しますか？'),
         content: const Text('保存していない入力内容は失われます。'),
         actions: [
@@ -4185,19 +4280,25 @@ class _RecordSheetState extends State<RecordSheet> {
                 keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
-                decoration: _fieldDecoration('最短距離(m)'),
+                decoration: _fieldDecoration(
+                  '最短距離(m)',
+                  hintText: '例: 850',
+                  helperText: '最短距離は徒歩経路、直線距離は地図上の距離',
+                ),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: InputDecorator(
-                decoration: _fieldDecoration('直線距離(m)'),
+                decoration: _fieldDecoration(
+                  '直線距離(m)',
+                  hintText: '自動計算',
+                  helperText: '基準地点からの直線距離',
+                ),
                 child: Text(
                   _estimatedStraightLineDistanceMeters == null
-                      ? '-'
-                      : _estimatedStraightLineDistanceMeters!.toStringAsFixed(
-                          0,
-                        ),
+                      ? '—'
+                      : formatCount(_estimatedStraightLineDistanceMeters!),
                 ),
               ),
             ),
@@ -4209,8 +4310,8 @@ class _RecordSheetState extends State<RecordSheet> {
           subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
           value: _hasElevator,
           onChanged: (value) {
-            _markDirty();
             setState(() => _hasElevator = value);
+            _recheckDirty();
           },
         ),
         if (_hasElevator)
@@ -4219,35 +4320,90 @@ class _RecordSheetState extends State<RecordSheet> {
             keyboardType: TextInputType.number,
             decoration: _fieldDecoration('エレベータ乗車回数', hintText: '例: 1, 2'),
           ),
-        Row(
+        // The primary way to give a manual record its position. Typing raw
+        // latitude and longitude was the only way before, which made manual
+        // registration effectively unusable on a phone.
+        _BaseLocationPickerMap(
+          lat: double.tryParse(_latController.text.trim()),
+          lng: double.tryParse(_lngController.text.trim()),
+          onSelected: _selectPlacePoint,
+          title: '地図でお店の位置を指定',
+          description: '地図をタップするとその地点が店舗の位置になります。',
+          markerLabel: 'お店',
+          reloadLabel: '基準地点に戻す',
+          fallbackCenter: _baseCenter,
+          height: 240,
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            _hasPickedCoordinates
+                ? '選択座標: ${_latController.text.trim()}, ${_lngController.text.trim()}'
+                : '位置が未設定です。地図をタップして指定してください。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        // Raw coordinates are still reachable for the rare case that needs
+        // them, but they no longer greet the user as two required fields.
+        _RecordSheetSection(
+          title: '座標を直接入力',
+          subtitle: '緯度・経度が分かっている場合のみ使います。',
+          expanded: _showRawCoordinates,
+          onExpansionChanged: (value) =>
+              setState(() => _showRawCoordinates = value),
           children: [
-            Expanded(
-              child: TextFormField(
-                controller: _latController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  signed: true,
-                  decimal: true,
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _latController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      signed: true,
+                      decimal: true,
+                    ),
+                    decoration: _fieldDecoration('緯度', isRequired: true),
+                    validator: _requiredDouble,
+                  ),
                 ),
-                decoration: _fieldDecoration('緯度', isRequired: true),
-                validator: _requiredDouble,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextFormField(
-                controller: _lngController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  signed: true,
-                  decimal: true,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _lngController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      signed: true,
+                      decimal: true,
+                    ),
+                    decoration: _fieldDecoration('経度', isRequired: true),
+                    validator: _requiredDouble,
+                  ),
                 ),
-                decoration: _fieldDecoration('経度', isRequired: true),
-                validator: _requiredDouble,
-              ),
+              ],
             ),
           ],
         ),
       ],
     );
+  }
+
+  bool get _hasPickedCoordinates =>
+      double.tryParse(_latController.text.trim()) != null &&
+      double.tryParse(_lngController.text.trim()) != null;
+
+  latlong.LatLng? get _baseCenter {
+    final base = widget.controller.baseLocation;
+    return base == null ? null : latlong.LatLng(base.lat, base.lng);
+  }
+
+  /// Writes a tapped point into the coordinate fields.
+  ///
+  /// Six decimals is roughly 0.1 m, well past anything a tap can express, and
+  /// keeps the text short enough to read back in the raw fields.
+  void _selectPlacePoint(latlong.LatLng point) {
+    _latController.text = point.latitude.toStringAsFixed(6);
+    _lngController.text = point.longitude.toStringAsFixed(6);
+    // The controllers' own listeners already refresh the required-field state
+    // and the dirty flag; this rebuild is for the map's marker.
+    setState(() {});
   }
 
   Widget _buildVisitDetailsFields() {
@@ -4291,10 +4447,13 @@ class _RecordSheetState extends State<RecordSheet> {
     String label, {
     bool isRequired = false,
     String? hintText,
+    String? helperText,
   }) {
     return InputDecoration(
       labelText: isRequired ? '$label *' : label,
-      helperText: isRequired ? '必須' : '任意',
+      // Only the required fields say anything: an 「任意」 under every other
+      // field was noise repeated a dozen times down the form.
+      helperText: isRequired ? '必須' : helperText,
       hintText: hintText,
     );
   }
@@ -4329,7 +4488,6 @@ class _RecordSheetState extends State<RecordSheet> {
     if (time == null || !mounted) {
       return;
     }
-    _markDirty();
     setState(() {
       _visitedAt = DateTime(
         date.year,
@@ -4339,6 +4497,7 @@ class _RecordSheetState extends State<RecordSheet> {
         time.minute,
       );
     });
+    _recheckDirty();
   }
 
   Future<void> _submit() async {
@@ -4350,6 +4509,12 @@ class _RecordSheetState extends State<RecordSheet> {
     if (lat == null || lng == null) {
       // The validator above already says so on the fields themselves; this is
       // the last guard against ever storing a coordinate-less place.
+      return;
+    }
+    if (!await _confirmSameDayDuplicate()) {
+      return;
+    }
+    if (!mounted) {
       return;
     }
     setState(() => _submitting = true);
@@ -4413,6 +4578,39 @@ class _RecordSheetState extends State<RecordSheet> {
     Navigator.of(context).pop(true);
   }
 
+  /// Asks before adding a second record for the same place on the same day.
+  ///
+  /// Re-entering a visit that was already saved is the easiest mistake to make
+  /// here, and nothing downstream would ever flag the duplicate.
+  Future<bool> _confirmSameDayDuplicate() async {
+    final placeId = widget.initialPlace?.id;
+    // Editing an existing record is not a new visit.
+    if (placeId == null || widget.existingRecord != null) {
+      return true;
+    }
+    if (!widget.controller.hasRecordForPlaceOn(placeId, _visitedAt)) {
+      return true;
+    }
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('今日はすでに記録があります'),
+        content: const Text('この店舗の同じ日の記録がすでにあります。もう一件追加しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('やめる'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('追加する'),
+          ),
+        ],
+      ),
+    );
+    return proceed == true;
+  }
+
   String? _required(String? value) {
     if (value == null || value.trim().isEmpty) {
       return '必須です';
@@ -4441,66 +4639,31 @@ class _RecordSheetState extends State<RecordSheet> {
   }
 }
 
+/// The sheet's title row.
+///
+/// The readiness banner that used to live here said the same thing as the one
+/// above the save button, one screen apart; only the one next to the button
+/// the user is reaching for survives.
 class _RecordSheetHeader extends StatelessWidget {
-  const _RecordSheetHeader({
-    required this.title,
-    required this.missingRequiredLabels,
-    required this.onClose,
-  });
+  const _RecordSheetHeader({required this.title, required this.onClose});
 
   final String title;
-  final List<String> missingRequiredLabels;
   final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
-    final ready = missingRequiredLabels.isEmpty;
-    final theme = Theme.of(context);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      spacing: 10,
+    return Row(
       children: [
-        Row(
-          children: [
-            Expanded(child: Text(title, style: theme.textTheme.headlineSmall)),
-            IconButton(
-              onPressed: onClose,
-              icon: const Icon(Icons.close),
-              tooltip: '閉じる',
-            ),
-          ],
+        Expanded(
+          child: Text(
+            title,
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
         ),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: ready ? const Color(0xFFE6F6F3) : const Color(0xFFFFF7ED),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: ready ? const Color(0xFF99D8CD) : const Color(0xFFF7C58A),
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  ready ? Icons.check_circle_outline : Icons.info_outline,
-                  color: ready
-                      ? const Color(0xFF0F766E)
-                      : const Color(0xFFB45309),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    ready
-                        ? '保存に必要な項目は入力済みです。任意項目は後から追記できます。'
-                        : '保存には ${missingRequiredLabels.join('・')} が必要です。',
-                  ),
-                ),
-              ],
-            ),
-          ),
+        IconButton(
+          onPressed: onClose,
+          icon: const Icon(Icons.close),
+          tooltip: '閉じる',
         ),
       ],
     );
@@ -4509,6 +4672,7 @@ class _RecordSheetHeader extends StatelessWidget {
 
 class _RecordSheetSection extends StatelessWidget {
   const _RecordSheetSection({
+    super.key,
     required this.title,
     required this.subtitle,
     required this.expanded,
@@ -4534,7 +4698,9 @@ class _RecordSheetSection extends StatelessWidget {
         maintainState: true,
         onExpansionChanged: onExpansionChanged,
         tilePadding: const EdgeInsets.symmetric(horizontal: 14),
-        childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        // Top padding, or the first field's floating label is clipped by the
+        // tile's own header as it animates into place.
+        childrenPadding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
         title: Text(title),
         subtitle: Text(subtitle),
         children: children,
@@ -4560,9 +4726,11 @@ class _RecordSaveBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Written out rather than assembled around a colon, so it never reads as
+    // a label with stray spaces around a list.
     final helperText = canSubmit
         ? '必須項目は入力済みです。'
-        : '未入力: ${missingRequiredLabels.join('・')}';
+        : '保存には${missingRequiredLabels.join('と')}が必要です。';
 
     // Stacked rather than side by side: at a large font scale a row would push
     // the button off-screen.
@@ -4710,6 +4878,9 @@ class _MapTabState extends State<_MapTab> {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
+      // The sheet can reach the status bar; without this its header would sit
+      // under the clock and the ✕ would be hard to hit.
+      useSafeArea: true,
       enableDrag: false,
       builder: (context) => RecordSheet(
         controller: widget.controller,
@@ -5333,6 +5504,9 @@ class _RecordsTab extends StatelessWidget {
                       final saved = await showModalBottomSheet<bool>(
                         context: context,
                         isScrollControlled: true,
+      // The sheet can reach the status bar; without this its header would sit
+      // under the clock and the ✕ would be hard to hit.
+      useSafeArea: true,
                         enableDrag: false,
                         builder: (context) => RecordSheet(
                           controller: controller,

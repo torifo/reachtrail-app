@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as latlong;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reachtrail_app/app.dart';
@@ -98,9 +100,22 @@ Future<void> _pumpSheet(
 }
 
 Finder _fieldWithLabel(String label) => find.ancestor(
-  of: find.text(label),
-  matching: find.byType(TextFormField),
+  of: find.text(label, skipOffstage: false),
+  matching: find.byType(TextFormField, skipOffstage: false),
+  matchRoot: false,
 );
+
+/// Fires the picker map's own tap callback.
+///
+/// Tapping the rendered map in a test would mean hitting real tiles that never
+/// load, so the widget's callback is invoked directly — the same entry point a
+/// real tap uses.
+void _tapPickerMap(WidgetTester tester, latlong.LatLng point) {
+  final map = tester.widget<FlutterMap>(
+    find.byKey(locationPickerMapKey, skipOffstage: false),
+  );
+  map.options.onTap!(const TapPosition(Offset.zero, Offset.zero), point);
+}
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -172,7 +187,7 @@ void main() {
     expect(lngField.controller!.text, isEmpty);
 
     // Submitting is refused until real coordinates are supplied.
-    expect(find.text('未入力: 位置'), findsOneWidget);
+    expect(find.text('保存には位置が必要です。'), findsOneWidget);
     await tester.ensureVisible(find.text('更新する'));
     await tester.pumpAndSettle();
     final submitButton = tester.widget<FilledButton>(
@@ -190,10 +205,14 @@ void main() {
     expect(stored.single.placeSnapshot['lat'], isNull);
     expect(stored.single.placeSnapshot['lng'], isNull);
 
-    // With coordinates typed in, the same sheet saves normally.
-    await tester.enterText(_fieldWithLabel('緯度 *'), '35.6812');
-    await tester.enterText(_fieldWithLabel('経度 *'), '139.7671');
+    // Tapping the picker map is the way a manual record gets its position.
+    _tapPickerMap(tester, latlong.LatLng(35.6812, 139.7671));
     await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextFormField>(_fieldWithLabel('緯度 *')).controller!.text,
+      '35.681200',
+    );
+    expect(find.text('必須項目は入力済みです。'), findsOneWidget);
     await tester.ensureVisible(find.text('更新する'));
     await tester.tap(find.text('更新する'));
     await tester.pumpAndSettle();
@@ -201,5 +220,90 @@ void main() {
     final saved = await PersistenceService().loadRecords();
     expect(saved.single.placeSnapshot['lat'], 35.6812);
     expect(saved.single.placeSnapshot['lng'], 139.7671);
+  });
+
+  testWidgets('focusing a field without typing leaves the form clean', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final record = _record(
+      snapshot: const Place(
+        id: 'place-1',
+        provider: 'manual',
+        providerPlaceId: 'manual-1',
+        name: 'Curry Stand',
+        lat: 35.682,
+        lng: 139.768,
+        address: '東京都千代田区',
+      ).toJson(),
+    );
+    final controller = await _controllerWith([record]);
+    addTearDown(controller.dispose);
+
+    await _pumpSheet(
+      tester,
+      controller: controller,
+      initialPlace: placeFromSnapshot(record.placeSnapshot),
+      existingRecord: record,
+    );
+
+    // Focus and a caret move fire the controller's listeners without changing
+    // a character; neither is an edit.
+    await tester.ensureVisible(_fieldWithLabel('メモ'));
+    await tester.pumpAndSettle();
+    await tester.tap(_fieldWithLabel('メモ'));
+    await tester.pumpAndSettle();
+    final memo = tester
+        .widget<TextFormField>(_fieldWithLabel('メモ'))
+        .controller!;
+    memo.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pumpAndSettle();
+
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    await navigator.maybePop();
+    await tester.pumpAndSettle();
+
+    expect(find.text('入力内容を破棄しますか？'), findsNothing);
+  });
+
+  testWidgets('typing and then undoing it disarms the discard prompt', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final record = _record(
+      snapshot: const Place(
+        id: 'place-1',
+        provider: 'manual',
+        providerPlaceId: 'manual-1',
+        name: 'Curry Stand',
+        lat: 35.682,
+        lng: 139.768,
+        address: '東京都千代田区',
+      ).toJson(),
+    );
+    final controller = await _controllerWith([record]);
+    addTearDown(controller.dispose);
+
+    await _pumpSheet(
+      tester,
+      controller: controller,
+      initialPlace: placeFromSnapshot(record.placeSnapshot),
+      existingRecord: record,
+    );
+
+    await tester.enterText(_fieldWithLabel('メモ'), 'また来たい');
+    await tester.pumpAndSettle();
+    await tester.enterText(_fieldWithLabel('メモ'), '');
+    await tester.pumpAndSettle();
+
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    await navigator.maybePop();
+    await tester.pumpAndSettle();
+
+    expect(find.text('入力内容を破棄しますか？'), findsNothing);
   });
 }
