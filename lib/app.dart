@@ -173,7 +173,8 @@ class AccountMenuButton extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleSmall,
                 overflow: TextOverflow.ellipsis,
               ),
-              subtitle: displayName?.isNotEmpty == true && email?.isNotEmpty == true
+              subtitle:
+                  displayName?.isNotEmpty == true && email?.isNotEmpty == true
                   ? Text(email!, overflow: TextOverflow.ellipsis)
                   : null,
             ),
@@ -510,7 +511,8 @@ class ReachTrailController extends ChangeNotifier {
     }
     try {
       final previousUserId = await _persistence.loadLastUserId();
-      final isDifferentUser = previousUserId != null && previousUserId != userId;
+      final isDifferentUser =
+          previousUserId != null && previousUserId != userId;
       if (isDifferentUser) {
         await clearLocalData();
       }
@@ -1275,14 +1277,14 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
       return;
     }
     _lastExitRequestAt = now;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: const Text('もう一度押すと終了します'),
-          duration: _exitConfirmationWindow,
-        ),
-      );
+    // No hideCurrentSnackBar(): an undo notice is the one thing a stray back
+    // press must not take away, and the queued exit hint follows it anyway.
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('もう一度押すと終了します'),
+        duration: _exitConfirmationWindow,
+      ),
+    );
   }
 
   Widget _buildCurrentTab(ReachTrailController controller) {
@@ -1549,7 +1551,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     super.initState();
     final base = widget.controller.baseLocation;
     _searchController = TextEditingController();
-    _nameController = TextEditingController(text: base?.name ?? _defaultBaseName);
+    _nameController = TextEditingController(
+      text: base?.name ?? _defaultBaseName,
+    );
     _addressController = TextEditingController(text: base?.memo ?? '');
     _floorController = TextEditingController(text: base?.floorLabel ?? '');
     _entryFloorController = TextEditingController(
@@ -1983,9 +1987,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     messenger.showSnackBar(
       SnackBar(
         content: Text(
-          needsPoint
-              ? '住所を反映しました。下の地図をタップして位置を指定してください。'
-              : '住所を反映しました。',
+          needsPoint ? '住所を反映しました。下の地図をタップして位置を指定してください。' : '住所を反映しました。',
         ),
       ),
     );
@@ -2201,7 +2203,7 @@ class _BaseCandidateTile extends StatelessWidget {
 /// Dragging is deliberately off: the map lives inside a scrolling form, and a
 /// pan gesture that starts on it used to swallow the page's vertical scroll.
 /// Pinch and double-tap still zoom, and the tap that picks a point still lands.
-class _BaseLocationPickerMap extends StatelessWidget {
+class _BaseLocationPickerMap extends StatefulWidget {
   const _BaseLocationPickerMap({
     required this.lat,
     required this.lng,
@@ -2228,38 +2230,72 @@ class _BaseLocationPickerMap extends StatelessWidget {
   final double height;
 
   @override
+  State<_BaseLocationPickerMap> createState() => _BaseLocationPickerMapState();
+}
+
+class _BaseLocationPickerMapState extends State<_BaseLocationPickerMap> {
+  final MapController _mapController = MapController();
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final lat = widget.lat;
+    final lng = widget.lng;
+    final fallbackCenter = widget.fallbackCenter;
     final selectedPoint = lat == null || lng == null
         ? null
-        : latlong.LatLng(lat!, lng!);
+        : latlong.LatLng(lat, lng);
     final center =
         selectedPoint ??
         fallbackCenter ??
         const latlong.LatLng(35.681236, 139.767125);
+    // Without a base to return to, the button only redraws the map, so it
+    // must not promise to recentre on a 基準地点 that was never given.
+    final reloadLabel = fallbackCenter == null ? '表示を戻す' : widget.reloadLabel;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 8,
       children: [
-        Text(title, style: Theme.of(context).textTheme.titleSmall),
-        Text(description),
+        Text(widget.title, style: Theme.of(context).textTheme.titleSmall),
+        Text(widget.description),
         SizedBox(
-          height: height,
+          height: widget.height,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
             child: _MapReloadable(
               reloadLabel: reloadLabel,
+              onReload: fallbackCenter == null
+                  ? null
+                  : () {
+                      try {
+                        _mapController.move(fallbackCenter, 15.5);
+                      } catch (_) {
+                        // The rebuilt map may not be attached yet; it already
+                        // opens on the same frame, so there is nothing to fix.
+                      }
+                    },
               builder: (context) => FlutterMap(
                 key: locationPickerMapKey,
+                mapController: _mapController,
                 options: MapOptions(
                   initialCenter: center,
                   initialZoom: selectedPoint == null
                       ? (fallbackCenter == null ? 12 : 15.5)
                       : 16,
-                  onTap: (_, point) => onSelected(point),
+                  onTap: (_, point) => widget.onSelected(point),
                   interactionOptions: const InteractionOptions(
+                    // Pinch-move rides along with the pinch zoom the map
+                    // already allows; a one-finger drag stays off so the
+                    // surrounding form can still be scrolled over the map.
                     flags:
                         InteractiveFlag.pinchZoom |
+                        InteractiveFlag.pinchMove |
                         InteractiveFlag.doubleTapZoom,
                   ),
                 ),
@@ -2279,7 +2315,7 @@ class _BaseLocationPickerMap extends StatelessWidget {
                           width: 140,
                           height: 64,
                           child: _MapMarker(
-                            label: markerLabel,
+                            label: widget.markerLabel,
                             color: const Color(0xFF1D4ED8),
                             isSelected: true,
                           ),
@@ -2310,6 +2346,7 @@ class _RegisterTab extends StatefulWidget {
 
   /// Non-null while the app runs offline on a cached session.
   final String? searchUnavailableReason;
+
   /// True when the auth service itself has seen the session rejected.
   final bool sessionExpired;
   final Future<void> Function() onReauthenticate;
@@ -2501,7 +2538,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               height: 360,
               child: _CandidateRadar(
                 baseLocation: base,
-                places: controller.searchResults,
+                places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
               ),
@@ -2517,7 +2554,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               child: _CandidateMap(
                 mapController: _mapController,
                 baseLocation: base,
-                places: controller.searchResults,
+                places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
               ),
@@ -2751,8 +2788,7 @@ class _PlaceResultTile extends StatelessWidget {
                 children: [
                   // First, because "have I been here already?" is the question
                   // the user is answering when they scan the list.
-                  if (recordedCount > 0)
-                    _Tag(label: '登録済み・$recordedCount回'),
+                  if (recordedCount > 0) _Tag(label: '登録済み・$recordedCount回'),
                   _Tag(label: place.provider.toUpperCase()),
                   if (place.buildingName.isNotEmpty)
                     _Tag(label: place.buildingName),
@@ -3436,6 +3472,9 @@ class _CandidateMap extends StatelessWidget {
     return CameraFit.bounds(
       bounds: LatLngBounds.fromPoints(points),
       padding: const EdgeInsets.all(56),
+      // A single far-flung candidate would otherwise fit the world in, so the
+      // floor keeps the frame at a neighbourhood the user can still read.
+      minZoom: 12,
       maxZoom: 16.5,
     );
   }
@@ -3915,6 +3954,7 @@ class _RecordSheetState extends State<RecordSheet> {
   /// Anchors used to scroll a section back into view once it expands.
   final _visitDetailsKey = GlobalKey();
   final _placeDetailsKey = GlobalKey();
+  final _rawCoordinatesKey = GlobalKey();
 
   /// Coordinates are normally set by tapping the picker map; the raw fields
   /// stay collapsed for the rare case that needs them.
@@ -4135,98 +4175,100 @@ class _RecordSheetState extends State<RecordSheet> {
           child: SingleChildScrollView(
             child: Form(
               key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              spacing: 14,
-              children: [
-                _RecordSheetHeader(
-                  title: widget.existingRecord != null
-                      ? '記録を編集'
-                      : widget.initialPlace == null
-                      ? '手入力で記録'
-                      : '候補から記録',
-                  onClose: _close,
-                ),
-                TextFormField(
-                  controller: _nameController,
-                  decoration: _fieldDecoration('店舗名', isRequired: true),
-                  validator: _required,
-                ),
-                _RecordSheetSection(
-                  key: _placeDetailsKey,
-                  title: 'お店の詳細',
-                  subtitle: _showPlaceDetails
-                      ? '位置、階数、移動負荷を確認できます。'
-                      : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
-                  expanded: _showPlaceDetails,
-                  onExpansionChanged: (value) {
-                    setState(() => _showPlaceDetails = value);
-                    if (value) {
-                      _revealSection(_placeDetailsKey);
-                    }
-                  },
-                  children: [_buildPlaceDetailsFields()],
-                ),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: DineType.values.map((type) {
-                    return ChoiceChip(
-                      label: Text(type == DineType.dineIn ? '店内飲食' : 'テイクアウト'),
-                      selected: _dineType == type,
-                      onSelected: (_) {
-                        setState(() => _dineType = type);
-                        _recheckDirty();
-                      },
-                    );
-                  }).toList(),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _timeLimitController,
-                        keyboardType: TextInputType.number,
-                        decoration: _fieldDecoration(
-                          '制限時間(分)',
-                          isRequired: true,
-                        ),
-                        validator: _requiredInt,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _pickDateTime,
-                        icon: const Icon(Icons.event),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                spacing: 14,
+                children: [
+                  _RecordSheetHeader(
+                    title: widget.existingRecord != null
+                        ? '記録を編集'
+                        : widget.initialPlace == null
+                        ? '手入力で記録'
+                        : '候補から記録',
+                    onClose: _close,
+                  ),
+                  TextFormField(
+                    controller: _nameController,
+                    decoration: _fieldDecoration('店舗名', isRequired: true),
+                    validator: _required,
+                  ),
+                  _RecordSheetSection(
+                    key: _placeDetailsKey,
+                    title: 'お店の詳細',
+                    subtitle: _showPlaceDetails
+                        ? '位置、階数、移動負荷を確認できます。'
+                        : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
+                    expanded: _showPlaceDetails,
+                    onExpansionChanged: (value) {
+                      setState(() => _showPlaceDetails = value);
+                      if (value) {
+                        _revealSection(_placeDetailsKey);
+                      }
+                    },
+                    children: [_buildPlaceDetailsFields()],
+                  ),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: DineType.values.map((type) {
+                      return ChoiceChip(
                         label: Text(
-                          RecordCardHeader.formatVisitedDate(_visitedAt),
+                          type == DineType.dineIn ? '店内飲食' : 'テイクアウト',
+                        ),
+                        selected: _dineType == type,
+                        onSelected: (_) {
+                          setState(() => _dineType = type);
+                          _recheckDirty();
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _timeLimitController,
+                          keyboardType: TextInputType.number,
+                          decoration: _fieldDecoration(
+                            '制限時間(分)',
+                            isRequired: true,
+                          ),
+                          validator: _requiredInt,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                _RecordSheetSection(
-                  key: _visitDetailsKey,
-                  title: '食事メモ',
-                  subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
-                  expanded: _showVisitDetails,
-                  onExpansionChanged: (value) {
-                    setState(() => _showVisitDetails = value);
-                    if (value) {
-                      _revealSection(_visitDetailsKey);
-                    }
-                  },
-                  children: [_buildVisitDetailsFields()],
-                ),
-                _RecordSaveBar(
-                  canSubmit: _canSubmit,
-                  isSubmitting: _submitting,
-                  isEditing: widget.existingRecord != null,
-                  missingRequiredLabels: missingRequiredLabels,
-                  onSubmit: _submitting || !_canSubmit ? null : _submit,
-                ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _pickDateTime,
+                          icon: const Icon(Icons.event),
+                          label: Text(
+                            RecordCardHeader.formatVisitedDate(_visitedAt),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  _RecordSheetSection(
+                    key: _visitDetailsKey,
+                    title: '食事メモ',
+                    subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
+                    expanded: _showVisitDetails,
+                    onExpansionChanged: (value) {
+                      setState(() => _showVisitDetails = value);
+                      if (value) {
+                        _revealSection(_visitDetailsKey);
+                      }
+                    },
+                    children: [_buildVisitDetailsFields()],
+                  ),
+                  _RecordSaveBar(
+                    canSubmit: _canSubmit,
+                    isSubmitting: _submitting,
+                    isEditing: widget.existingRecord != null,
+                    missingRequiredLabels: missingRequiredLabels,
+                    onSubmit: _submitting || !_canSubmit ? null : _submit,
+                  ),
                 ],
               ),
             ),
@@ -4409,11 +4451,16 @@ class _RecordSheetState extends State<RecordSheet> {
         // Raw coordinates are still reachable for the rare case that needs
         // them, but they no longer greet the user as two required fields.
         _RecordSheetSection(
+          key: _rawCoordinatesKey,
           title: '座標を直接入力',
           subtitle: '緯度・経度が分かっている場合のみ使います。',
           expanded: _showRawCoordinates,
-          onExpansionChanged: (value) =>
-              setState(() => _showRawCoordinates = value),
+          onExpansionChanged: (value) {
+            setState(() => _showRawCoordinates = value);
+            if (value) {
+              _revealSection(_rawCoordinatesKey);
+            }
+          },
           children: [
             Row(
               children: [
@@ -4718,10 +4765,7 @@ class _RecordSheetHeader extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: Text(
-            title,
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
+          child: Text(title, style: Theme.of(context).textTheme.headlineSmall),
         ),
         IconButton(
           onPressed: onClose,
@@ -5254,9 +5298,7 @@ class _SelectedSharedPlaceSummary extends StatelessWidget {
               runSpacing: 8,
               children: [
                 _Tag(label: '${entry.visitCount} 件'),
-                _Tag(
-                  label: '平均 ${formatCount(entry.averageDifficulty)}',
-                ),
+                _Tag(label: '平均 ${formatCount(entry.averageDifficulty)}'),
                 _Tag(
                   label: 'ベスト ${formatMeters(entry.bestRouteDistanceMeters)}',
                 ),
@@ -5508,10 +5550,7 @@ class _RecordsTab extends StatelessWidget {
                 record: controller.bestDifficultyRecord,
                 metricBuilder: (record) => formatCount(record.difficultyScore),
               ),
-              _BestPlaceTile(
-                label: '最多訪問',
-                entry: controller.mostVisitedPlace,
-              ),
+              _BestPlaceTile(label: '最多訪問', entry: controller.mostVisitedPlace),
             ],
           ),
         ),
@@ -5543,32 +5582,32 @@ class _RecordsTab extends StatelessWidget {
                 }).toList(),
               ),
               ...controller.sortedRecords.map(
-                  (record) => _RecordTile(
-                    record: record,
-                    onEdit: () async {
-                      final saved = await showModalBottomSheet<bool>(
-                        context: context,
-                        isScrollControlled: true,
-                        // The sheet can reach the status bar; without this its
-                        // header would sit under the clock and the ✕ would be
-                        // hard to hit.
-                        useSafeArea: true,
-                        enableDrag: false,
-                        builder: (context) => RecordSheet(
-                          controller: controller,
-                          initialPlace: placeFromSnapshot(record.placeSnapshot),
-                          existingRecord: record,
-                        ),
+                (record) => _RecordTile(
+                  record: record,
+                  onEdit: () async {
+                    final saved = await showModalBottomSheet<bool>(
+                      context: context,
+                      isScrollControlled: true,
+                      // The sheet can reach the status bar; without this its
+                      // header would sit under the clock and the ✕ would be
+                      // hard to hit.
+                      useSafeArea: true,
+                      enableDrag: false,
+                      builder: (context) => RecordSheet(
+                        controller: controller,
+                        initialPlace: placeFromSnapshot(record.placeSnapshot),
+                        existingRecord: record,
+                      ),
+                    );
+                    if (saved == true && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('記録を更新しました。')),
                       );
-                      if (saved == true && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('記録を更新しました。')),
-                        );
-                      }
-                    },
-                    onDelete: () => _deleteRecord(context, record),
-                  ),
+                    }
+                  },
+                  onDelete: () => _deleteRecord(context, record),
                 ),
+              ),
             ],
           ),
         ),
@@ -5585,7 +5624,7 @@ class _RecordsTab extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('${place.name} の記録を削除しますか？'),
-        content: const Text('この記録を削除します。削除後は元に戻せません。'),
+        content: const Text('この記録を削除します。削除直後であれば元に戻せます。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
