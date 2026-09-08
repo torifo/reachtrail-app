@@ -175,6 +175,21 @@ void main() {
         expect(controller.isSearching, isFalse);
       },
     );
+
+    test('a successful search reports that the network is reachable', () async {
+      var reachable = 0;
+      final controller = ReachTrailController(
+        persistence: PersistenceService(),
+        configService: _StubConfigService(),
+        onNetworkSuccess: () => reachable++,
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+
+      expect(controller.errorMessage, isNull);
+      expect(reachable, 1);
+    });
   });
 
   group('cross-account data', () {

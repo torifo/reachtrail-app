@@ -134,7 +134,7 @@ void main() {
       expect(service.usedLightweightAuthentication, isFalse);
     });
 
-    test('a server error keeps the session rather than signing out', () async {
+    test('a server error keeps the session and stays online', () async {
       await _cacheSession();
       final service = GoogleAuthService(
         configService: _StubConfigService(),
@@ -145,8 +145,54 @@ void main() {
       await service.initialize();
 
       expect(service.isSignedIn, isTrue);
-      expect(service.isOffline, isTrue);
+      // The server answered, so the app is demonstrably online; only the
+      // session's freshness is unknown, and that is not worth a banner.
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
       expect(service.sessionExpired, isFalse);
+    });
+
+    test('a 404 from a backend without /me changes nothing', () async {
+      await _cacheSession();
+      final service = GoogleAuthService(
+        configService: _StubConfigService(),
+        httpClient: _RecordingClient(
+          (_) => http.Response('{"error":"Route not found"}', 404),
+        ),
+      );
+      addTearDown(service.dispose);
+
+      await service.initialize();
+
+      expect(service.isSignedIn, isTrue);
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
+      expect(service.sessionExpired, isFalse);
+    });
+
+    test('clearOffline retires the banner once a call succeeds', () async {
+      await _cacheSession();
+      final service = GoogleAuthService(
+        configService: _StubConfigService(),
+        httpClient: _RecordingClient(
+          (_) => throw const SocketException('no route to host'),
+        ),
+      );
+      addTearDown(service.dispose);
+      await service.initialize();
+      expect(service.isOffline, isTrue);
+
+      var notified = 0;
+      service.addListener(() => notified++);
+      service.clearOffline();
+
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
+      expect(notified, 1);
+
+      // Already online: no redundant rebuild.
+      service.clearOffline();
+      expect(notified, 1);
     });
   });
 

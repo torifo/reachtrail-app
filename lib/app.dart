@@ -198,6 +198,9 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
       // A token the proxy has rejected is worthless: drop it so nothing retries
       // with it, while the user's identity stays on screen for the prompt.
       onSessionExpired: () => _authService.markSessionExpired(),
+      // A search that came back is proof the network is reachable, so it
+      // retires any offline banner a failed check left behind.
+      onNetworkSuccess: () => _authService.clearOffline(),
     )..load();
     _authService.addListener(_handleAuthChanged);
     _authService.initialize();
@@ -342,15 +345,18 @@ class ReachTrailController extends ChangeNotifier {
     required LocalConfigService configService,
     String Function()? sessionTokenProvider,
     VoidCallback? onSessionExpired,
+    VoidCallback? onNetworkSuccess,
   }) : _persistence = persistence,
        _configService = configService,
        _sessionTokenProvider = sessionTokenProvider,
-       _onSessionExpired = onSessionExpired;
+       _onSessionExpired = onSessionExpired,
+       _onNetworkSuccess = onNetworkSuccess;
 
   final PersistenceService _persistence;
   final LocalConfigService _configService;
   final String Function()? _sessionTokenProvider;
   final VoidCallback? _onSessionExpired;
+  final VoidCallback? _onNetworkSuccess;
   PlaceSearchService? _searchService;
 
   bool isBootstrapping = true;
@@ -606,6 +612,7 @@ class ReachTrailController extends ChangeNotifier {
         baseLocation: baseLocation,
         nearbyOnly: nearbyOnly,
       );
+      _onNetworkSuccess?.call();
     } catch (error) {
       errorMessage = describeSearchFailure(error);
       _noteSearchFailure(error);
@@ -627,6 +634,7 @@ class ReachTrailController extends ChangeNotifier {
         nearbyOnly: false,
         purpose: SearchPurpose.baseLocation,
       );
+      _onNetworkSuccess?.call();
       if (buildingSearchResults.isEmpty) {
         buildingSearchError = '建物候補が見つかりません。建物名や住所の一部で試してください。';
       }
@@ -651,6 +659,7 @@ class ReachTrailController extends ChangeNotifier {
         nearbyOnly: false,
         purpose: SearchPurpose.baseLocation,
       );
+      _onNetworkSuccess?.call();
       if (baseSearchResults.isEmpty) {
         baseSearchError = '基準地点候補が見つかりません。別の建物名や住所で試してください。';
       }

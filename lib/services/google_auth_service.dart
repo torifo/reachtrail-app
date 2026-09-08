@@ -98,6 +98,13 @@ class GoogleAuthService extends ChangeNotifier {
   /// of an unrelated plugin call must not be reported as being offline.
   bool _sessionConfirmed = false;
 
+  /// True once any API call has come back with an HTTP response.
+  ///
+  /// Separate from [_sessionConfirmed] on purpose: a 404 or a 5xx proves the
+  /// network works even though it says nothing about the token, and only the
+  /// network question decides whether the offline banner is honest.
+  bool _networkReached = false;
+
   /// When the session was last checked against `/me`; used to throttle the
   /// check that runs every time the app returns to the foreground.
   DateTime? _lastSessionCheckAt;
@@ -168,7 +175,7 @@ class GoogleAuthService extends ChangeNotifier {
       // With a session in hand the app stays usable, so a failure here is a
       // connectivity notice at worst, never a sign-in error.
       if (currentUser != null) {
-        if (!_sessionConfirmed) {
+        if (!_sessionConfirmed && !_networkReached) {
           _markOffline();
         }
       } else {
@@ -205,6 +212,7 @@ class GoogleAuthService extends ChangeNotifier {
       return;
     }
 
+    _networkReached = true;
     if (response.statusCode == 200) {
       _sessionConfirmed = true;
       sessionExpired = false;
@@ -218,9 +226,11 @@ class GoogleAuthService extends ChangeNotifier {
       markSessionExpired();
       return;
     }
-    // A 5xx says nothing about the token, so the session survives.
-    _markOffline();
-    notifyListeners();
+    // Anything else — a 404 for a route this deployment does not serve, a 5xx,
+    // a gateway's error page — says nothing about the token *and* proves the
+    // network is reachable. So the session survives and the app is not
+    // offline: doing nothing here is the fix. Marking offline instead pinned
+    // the banner on every launch against a backend without `/me`.
   }
 
   /// Refreshes the user's own fields from a `/me` payload, ignoring anything
@@ -298,6 +308,20 @@ class GoogleAuthService extends ChangeNotifier {
   void _markOffline() {
     isOffline = true;
     searchUnavailableReason = offlineSearchUnavailableMessage;
+  }
+
+  /// Clears the offline notice after any call that reached the network.
+  ///
+  /// The offline flag is a guess made when a request failed; a request that
+  /// succeeded is proof to the contrary, so every caller that gets a real
+  /// response tells the service here rather than leaving a stale banner up.
+  void clearOffline() {
+    if (!isOffline && searchUnavailableReason == null) {
+      return;
+    }
+    isOffline = false;
+    searchUnavailableReason = null;
+    notifyListeners();
   }
 
   /// Re-checks the session when the app returns to the foreground.
