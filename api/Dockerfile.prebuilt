@@ -1,0 +1,17 @@
+# Runtime-only image for a binary cross-compiled on the host:
+#   dart compile exe bin/server.dart --target-os=linux --target-arch=x64 -o build/reachtrail_api_linux_x64
+# Avoids running the Dart compiler under QEMU when building linux/amd64 on Apple Silicon.
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin reachtrail
+WORKDIR /app
+COPY build/reachtrail_api_linux_x64 /app/reachtrail_api
+
+RUN mkdir -p /app/data && chown -R reachtrail:reachtrail /app
+USER reachtrail
+
+EXPOSE 8080
+CMD ["/app/reachtrail_api"]
