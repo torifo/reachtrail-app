@@ -79,6 +79,12 @@ class SessionExpiredException extends PlaceSearchConfigurationException {
 
 enum SearchPurpose { dinePlace, baseLocation }
 
+/// Marks a synthesised base-location candidate.
+///
+/// Internal bookkeeping, not a category anyone chose: the UI filters it out of
+/// the chips rather than showing an English enum name to a Japanese user.
+const String baseLocationCategoryMarker = 'BaseLocation';
+
 /// Builds the Yahoo! Local Search query string.
 ///
 /// `dist` is only meaningful together with `lat`/`lon`; sending it without a
@@ -520,7 +526,7 @@ List<Place> _prependInferredBaseCandidate(String query, List<Place> ranked) {
     lng: first.lng,
     address: first.address,
     buildingName: query.trim(),
-    category: 'BaseLocation',
+    category: baseLocationCategoryMarker,
     rawPayload: jsonEncode({
       'source': 'inferred_base_location',
       'query': query,
@@ -561,7 +567,7 @@ List<Place> collapseBaseLocationCandidates(List<Place> ranked) {
       lng: primary.lng,
       address: primary.address,
       buildingName: buildingName,
-      category: 'BaseLocation',
+      category: baseLocationCategoryMarker,
       rawPayload: jsonEncode({
         'source': 'base_location_group',
         'buildingName': buildingName,

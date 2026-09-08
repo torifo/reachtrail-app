@@ -175,6 +175,21 @@ void main() {
         expect(controller.isSearching, isFalse);
       },
     );
+
+    test('a successful search reports that the network is reachable', () async {
+      var reachable = 0;
+      final controller = ReachTrailController(
+        persistence: PersistenceService(),
+        configService: _StubConfigService(),
+        onNetworkSuccess: () => reachable++,
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+
+      expect(controller.errorMessage, isNull);
+      expect(reachable, 1);
+    });
   });
 
   group('cross-account data', () {
@@ -296,6 +311,109 @@ void main() {
     });
   });
 
+  group('record deletion undo', () {
+    test('restoring a deleted record brings its place back too', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+      );
+      await controller.load();
+      await controller.saveRecord(
+        place: const Place(
+          id: 'place-1',
+          provider: 'manual',
+          providerPlaceId: 'manual-1',
+          name: 'カレー屋',
+          lat: 35.682,
+          lng: 139.768,
+          address: '東京都千代田区',
+        ),
+        routeDistanceMeters: 400,
+        visitedAt: DateTime(2026, 9, 9, 12, 30),
+        timeLimitMinutes: 45,
+        dineType: DineType.dineIn,
+        menu: '',
+        price: null,
+        paymentMethod: '',
+        memo: '',
+      );
+      final saved = controller.records.single;
+      expect(controller.places, hasLength(1));
+
+      await controller.deleteRecord(saved.id);
+      expect(controller.records, isEmpty);
+      expect(controller.places, isEmpty);
+
+      await controller.restoreRecord(saved);
+
+      expect(controller.records.single.id, saved.id);
+      // The place went with the record, so it has to come back with it.
+      expect(controller.places.single.id, 'place-1');
+      expect(await persistence.loadRecords(), hasLength(1));
+
+      // A second undo tap must not duplicate the entry.
+      await controller.restoreRecord(saved);
+      expect(controller.records, hasLength(1));
+    });
+
+    test('counts records per place and per day', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+      );
+      await controller.load();
+      Future<void> record(DateTime visitedAt) => controller.saveRecord(
+        place: const Place(
+          id: 'place-1',
+          provider: 'manual',
+          providerPlaceId: 'manual-1',
+          name: 'カレー屋',
+          lat: 35.682,
+          lng: 139.768,
+          address: '東京都千代田区',
+        ),
+        routeDistanceMeters: 400,
+        visitedAt: visitedAt,
+        timeLimitMinutes: 45,
+        dineType: DineType.dineIn,
+        menu: '',
+        price: null,
+        paymentMethod: '',
+        memo: '',
+      );
+
+      await record(DateTime(2026, 9, 9, 12, 0));
+      await record(DateTime(2026, 9, 10, 12, 0));
+
+      expect(controller.recordCountForPlace('place-1'), 2);
+      expect(controller.recordCountForPlace('place-2'), 0);
+      expect(
+        controller.hasRecordForPlaceOn('place-1', DateTime(2026, 9, 9, 21, 0)),
+        isTrue,
+      );
+      expect(
+        controller.hasRecordForPlaceOn('place-1', DateTime(2026, 9, 11)),
+        isFalse,
+      );
+    });
+  });
+
+  group('number formatting', () {
+    test('groups thousands and keeps small numbers untouched', () {
+      expect(formatCount(0), '0');
+      expect(formatCount(999), '999');
+      expect(formatCount(2936), '2,936');
+      expect(formatCount(3056.4), '3,056');
+      expect(formatCount(1234567), '1,234,567');
+      expect(formatCount(-2500), '-2,500');
+      expect(formatMeters(2936), '2,936m');
+    });
+  });
+
   group('yahoo query builder', () {
     test('omits dist when there is no base location', () {
       final params = buildYahooSearchParams(
@@ -366,7 +484,7 @@ void main() {
                 padding: const EdgeInsets.all(16),
                 child: RecordCardHeader(
                   placeName: 'とても長い名前のカレーとスパイスのお店 新宿西口店',
-                  visitedAt: DateTime(2026, 3, 4),
+                  visitedAt: DateTime(2026, 3, 4, 12, 30),
                   onEdit: () async {},
                   onDelete: () async {},
                 ),
@@ -377,17 +495,17 @@ void main() {
       );
 
       expect(tester.takeException(), isNull);
-      expect(find.text('2026/03/04'), findsOneWidget);
+      expect(find.text('2026/03/04 12:30'), findsOneWidget);
     });
 
-    test('formats the date with zero padding', () {
+    test('formats the date and time with zero padding', () {
       expect(
-        RecordCardHeader.formatVisitedDate(DateTime(2026, 3, 4)),
-        '2026/03/04',
+        RecordCardHeader.formatVisitedDate(DateTime(2026, 3, 4, 9, 5)),
+        '2026/03/04 09:05',
       );
       expect(
-        RecordCardHeader.formatVisitedDate(DateTime(2026, 12, 25)),
-        '2026/12/25',
+        RecordCardHeader.formatVisitedDate(DateTime(2026, 12, 25, 18, 40)),
+        '2026/12/25 18:40',
       );
     });
   });

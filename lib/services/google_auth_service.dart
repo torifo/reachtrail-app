@@ -98,6 +98,16 @@ class GoogleAuthService extends ChangeNotifier {
   /// of an unrelated plugin call must not be reported as being offline.
   bool _sessionConfirmed = false;
 
+  /// True once an API call in this session has come back with an HTTP
+  /// response of any status — `/me` or the `/auth/google` exchange.
+  ///
+  /// Separate from [_sessionConfirmed] on purpose: a 404 or a 5xx proves the
+  /// network works even though it says nothing about the token, and only the
+  /// network question decides whether the offline banner is honest. Reset on
+  /// sign-out, since it describes this session's reachability and not the
+  /// device's.
+  bool _networkReached = false;
+
   /// When the session was last checked against `/me`; used to throttle the
   /// check that runs every time the app returns to the foreground.
   DateTime? _lastSessionCheckAt;
@@ -168,7 +178,7 @@ class GoogleAuthService extends ChangeNotifier {
       // With a session in hand the app stays usable, so a failure here is a
       // connectivity notice at worst, never a sign-in error.
       if (currentUser != null) {
-        if (!_sessionConfirmed) {
+        if (!_sessionConfirmed && !_networkReached) {
           _markOffline();
         }
       } else {
@@ -189,8 +199,6 @@ class GoogleAuthService extends ChangeNotifier {
     if (token.isEmpty || _apiBaseUrl.isEmpty) {
       return;
     }
-    _lastSessionCheckAt = DateTime.now();
-
     final http.Response response;
     try {
       response = await _httpClient
@@ -200,11 +208,15 @@ class GoogleAuthService extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 8));
     } catch (_) {
+      // No response arrived, so the throttle stays untouched: a check that
+      // never reached the server must not suppress the next attempt.
       _markOffline();
       notifyListeners();
       return;
     }
 
+    _lastSessionCheckAt = DateTime.now();
+    _networkReached = true;
     if (response.statusCode == 200) {
       _sessionConfirmed = true;
       sessionExpired = false;
@@ -215,12 +227,19 @@ class GoogleAuthService extends ChangeNotifier {
       return;
     }
     if (response.statusCode == 401 || response.statusCode == 403) {
+      // The token is gone but the network plainly is not, so the offline
+      // banner would be a second, false explanation on top of the real one.
+      clearOffline();
       markSessionExpired();
       return;
     }
-    // A 5xx says nothing about the token, so the session survives.
-    _markOffline();
-    notifyListeners();
+    // Anything else — a 404 for a route this deployment does not serve, a 5xx,
+    // a gateway's error page — says nothing about the token *and* proves the
+    // network is reachable. So the session survives; the only thing to do is
+    // take down an offline banner an earlier failure may have raised.
+    // Marking offline instead pinned the banner on every launch against a
+    // backend without `/me`.
+    clearOffline();
   }
 
   /// Refreshes the user's own fields from a `/me` payload, ignoring anything
@@ -300,6 +319,20 @@ class GoogleAuthService extends ChangeNotifier {
     searchUnavailableReason = offlineSearchUnavailableMessage;
   }
 
+  /// Clears the offline notice after any call that reached the network.
+  ///
+  /// The offline flag is a guess made when a request failed; a request that
+  /// succeeded is proof to the contrary, so every caller that gets a real
+  /// response tells the service here rather than leaving a stale banner up.
+  void clearOffline() {
+    if (!isOffline && searchUnavailableReason == null) {
+      return;
+    }
+    isOffline = false;
+    searchUnavailableReason = null;
+    notifyListeners();
+  }
+
   /// Re-checks the session when the app returns to the foreground.
   ///
   /// This must never show UI, so it only ever talks to our own API: Google's
@@ -351,6 +384,10 @@ class GoogleAuthService extends ChangeNotifier {
     _sessionGeneration++;
     currentUser = null;
     _isRestoredSession = false;
+    _sessionConfirmed = false;
+    _networkReached = false;
+    _lastSessionCheckAt = null;
+    sessionExpired = false;
     isOffline = false;
     searchUnavailableReason = null;
     notifyListeners();
@@ -412,10 +449,7 @@ class GoogleAuthService extends ChangeNotifier {
     if (idToken == null || idToken.isEmpty) {
       isSigningIn = true;
       notifyListeners();
-      _failSignIn(
-        _sessionGeneration,
-        'Google の認証情報を取得できませんでした。再度お試しください。',
-      );
+      _failSignIn(_sessionGeneration, 'Google の認証情報を取得できませんでした。再度お試しください。');
       isSigningIn = false;
       notifyListeners();
       return;
@@ -516,6 +550,7 @@ class GoogleAuthService extends ChangeNotifier {
       );
       currentUser = authenticatedUser;
       _isRestoredSession = false;
+      _networkReached = true;
       _sessionConfirmed = true;
       sessionExpired = false;
       _lastSessionCheckAt = DateTime.now();

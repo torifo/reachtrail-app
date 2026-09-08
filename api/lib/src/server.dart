@@ -171,6 +171,17 @@ class ReachTrailUserStore {
     return updated;
   }
 
+  /// Returns the user with [id], or null when no such user exists.
+  Future<ReachTrailUser?> findById(String id) async {
+    final users = await loadAll();
+    for (final user in users) {
+      if (user.id == id) {
+        return user;
+      }
+    }
+    return null;
+  }
+
   /// Removes the user with [id]. Returns true when a user was actually deleted.
   Future<bool> deleteById(String id) async {
     final users = await loadAll();
@@ -462,6 +473,33 @@ Handler buildHandler(ReachTrailApiConfig config) {
     }
   }
 
+  Future<Response> getMe(Request request) async {
+    final userId = await authenticate(request);
+    if (userId == null) {
+      return _jsonResponse(401, {
+        'error': 'A valid session token is required.',
+      });
+    }
+    try {
+      final user = await userStore.findById(userId);
+      if (user == null) {
+        return _jsonResponse(401, {
+          'error': 'A valid session token is required.',
+        });
+      }
+      return _jsonResponse(200, {
+        'id': user.id,
+        'email': user.email,
+        'displayName': user.displayName,
+        'photoUrl': user.avatarUrl,
+      });
+    } catch (error) {
+      stderr.writeln(error);
+      return _jsonResponse(500, {'error': 'Internal server error.'});
+    }
+  }
+
+  router.get('/me', getMe);
   router.delete('/me', deleteMe);
   router.post('/me/delete', deleteMe);
 
