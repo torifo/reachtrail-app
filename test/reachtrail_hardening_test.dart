@@ -26,6 +26,17 @@ class _StubConfigService extends LocalConfigService {
   Future<LocalConfig> load() async => _config;
 }
 
+/// Returns the records it read *before* yielding, so a wipe that lands
+/// mid-load would otherwise be overwritten by stale data.
+class _SlowPersistence extends PersistenceService {
+  @override
+  Future<List<DineChallengeRecord>> loadRecords() async {
+    final records = await super.loadRecords();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    return records;
+  }
+}
+
 class _ThrowingPersistence extends PersistenceService {
   @override
   Future<List<Place>> loadPlaces() async {
@@ -204,6 +215,56 @@ void main() {
 
       expect(controller.records, hasLength(1));
       expect(controller.baseLocation, isNotNull);
+    });
+
+    test('a slow load cannot resurrect the previous account data', () async {
+      final persistence = _SlowPersistence();
+      await persistence.saveBaseLocation(_base());
+      await persistence.saveRecords([_record()]);
+      await persistence.saveLastUserId('user-1');
+
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+      );
+      // Deliberately not awaited yet: a sign-in can land while the first read
+      // of the previous user's data is still in flight.
+      final loading = controller.load();
+
+      await controller.adoptUser('user-2');
+      await loading;
+
+      expect(controller.records, isEmpty);
+      expect(controller.baseLocation, isNull);
+      expect(await persistence.loadRecords(), isEmpty);
+      expect(await persistence.loadLastUserId(), 'user-2');
+    });
+
+    test('a re-sign-in after a wipe re-registers the account', () async {
+      final tracker = SignedInUserTracker();
+
+      expect(tracker.nextUserToAdopt('user-1'), 'user-1');
+      expect(tracker.nextUserToAdopt('user-1'), isNull);
+      // Account deletion signs the user out; signing back in must re-register
+      // the id, or the next different account would inherit the local data.
+      expect(tracker.nextUserToAdopt(null), isNull);
+      expect(tracker.nextUserToAdopt('user-1'), 'user-1');
+    });
+
+    test('adopting after a wipe writes the account id again', () async {
+      final persistence = PersistenceService();
+      await persistence.saveLastUserId('user-1');
+
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+      );
+      await controller.load();
+      await controller.clearLocalData();
+
+      await controller.adoptUser('user-1');
+
+      expect(await persistence.loadLastUserId(), 'user-1');
     });
 
     test('a first sign-in on a fresh device keeps local data', () async {

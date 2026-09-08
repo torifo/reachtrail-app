@@ -31,7 +31,7 @@ const String saveFailureMessage = '保存に失敗しました。もう一度お
 const String deleteFailureMessage = '削除に失敗しました。もう一度お試しください。';
 
 /// Shown when the local store could not be read at startup.
-const String bootstrapFailureMessage = '保存データの読み込みに失敗しました。通信は不要です。再試行してください。';
+const String bootstrapFailureMessage = '保存データの読み込みに失敗しました。再試行してください。';
 
 /// Shown when a search is requested before the search service could be built.
 const String searchUnavailableMessage = '検索を初期化できませんでした。アプリを再起動してください。';
@@ -46,10 +46,33 @@ class ReachTrailApp extends StatefulWidget {
   State<ReachTrailApp> createState() => _ReachTrailAppState();
 }
 
+/// Remembers which account the local store has already been bound to.
+///
+/// Signing out (or deleting the account) clears the memory, so signing back in
+/// re-registers the id; without that, the next *different* account would find
+/// no owner recorded and would inherit the previous user's records.
+class SignedInUserTracker {
+  String? _handledUserId;
+
+  /// Returns the id whose local data must be adopted, or null when there is
+  /// nothing to do.
+  String? nextUserToAdopt(String? userId) {
+    if (userId == null || userId.isEmpty) {
+      _handledUserId = null;
+      return null;
+    }
+    if (userId == _handledUserId) {
+      return null;
+    }
+    _handledUserId = userId;
+    return userId;
+  }
+}
+
 class _ReachTrailAppState extends State<ReachTrailApp> {
   late final ReachTrailController _controller;
   late final GoogleAuthService _authService;
-  String? _handledUserId;
+  final SignedInUserTracker _userTracker = SignedInUserTracker();
 
   @override
   void initState() {
@@ -60,6 +83,9 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
       persistence: PersistenceService(),
       configService: configService,
       sessionTokenProvider: () => _authService.currentUser?.sessionToken ?? '',
+      // A token the proxy has rejected is worthless: drop it so nothing retries
+      // with it, while the user's identity stays on screen for the prompt.
+      onSessionExpired: () => _authService.markSessionExpired(),
     )..load();
     _authService.addListener(_handleAuthChanged);
     _authService.initialize();
@@ -68,12 +94,11 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   /// Local data belongs to whoever was signed in when it was written, so a
   /// sign-in by a different Google account must not inherit it.
   void _handleAuthChanged() {
-    final user = _authService.currentUser;
-    if (user == null || user.id.isEmpty || user.id == _handledUserId) {
+    final userId = _userTracker.nextUserToAdopt(_authService.currentUser?.id);
+    if (userId == null) {
       return;
     }
-    _handledUserId = user.id;
-    unawaited(_controller.adoptUser(user.id));
+    unawaited(_controller.adoptUser(userId));
   }
 
   @override
@@ -204,13 +229,16 @@ class ReachTrailController extends ChangeNotifier {
     required PersistenceService persistence,
     required LocalConfigService configService,
     String Function()? sessionTokenProvider,
+    VoidCallback? onSessionExpired,
   }) : _persistence = persistence,
        _configService = configService,
-       _sessionTokenProvider = sessionTokenProvider;
+       _sessionTokenProvider = sessionTokenProvider,
+       _onSessionExpired = onSessionExpired;
 
   final PersistenceService _persistence;
   final LocalConfigService _configService;
   final String Function()? _sessionTokenProvider;
+  final VoidCallback? _onSessionExpired;
   PlaceSearchService? _searchService;
 
   bool isBootstrapping = true;
@@ -243,7 +271,17 @@ class ReachTrailController extends ChangeNotifier {
   List<Place> buildingSearchResults = const [];
   RecordSort recordSort = RecordSort.latest;
 
-  Future<void> load() async {
+  /// The most recent [load], so [adoptUser] can wait for a read that is still
+  /// in flight instead of racing it.
+  Future<void>? _loadFuture;
+
+  Future<void> load() {
+    final future = _load();
+    _loadFuture = future;
+    return future;
+  }
+
+  Future<void> _load() async {
     isBootstrapping = true;
     bootstrapErrorMessage = null;
     notifyListeners();
@@ -282,12 +320,24 @@ class ReachTrailController extends ChangeNotifier {
     if (userId.isEmpty) {
       return;
     }
+    // A sign-in can land while the startup read is still in flight; without
+    // this the read would finish after the wipe and hand the new user the
+    // previous account's records.
+    try {
+      await _loadFuture;
+    } catch (_) {
+      // A failed load is already reported through `bootstrapErrorMessage`.
+    }
     try {
       final previousUserId = await _persistence.loadLastUserId();
-      if (previousUserId != null && previousUserId != userId) {
+      final isDifferentUser = previousUserId != null && previousUserId != userId;
+      if (isDifferentUser) {
         await clearLocalData();
       }
       await _persistence.saveLastUserId(userId);
+      if (isDifferentUser) {
+        await load();
+      }
     } catch (_) {
       // Never block sign-in on a bookkeeping write.
     }
@@ -446,7 +496,7 @@ class ReachTrailController extends ChangeNotifier {
       );
     } catch (error) {
       errorMessage = describeSearchFailure(error);
-      sessionExpired = sessionExpired || error is SessionExpiredException;
+      _noteSearchFailure(error);
       searchResults = const [];
     } finally {
       isSearching = false;
@@ -470,7 +520,7 @@ class ReachTrailController extends ChangeNotifier {
       }
     } catch (error) {
       buildingSearchError = describeSearchFailure(error);
-      sessionExpired = sessionExpired || error is SessionExpiredException;
+      _noteSearchFailure(error);
       buildingSearchResults = const [];
     } finally {
       isBuildingSearching = false;
@@ -494,7 +544,7 @@ class ReachTrailController extends ChangeNotifier {
       }
     } catch (error) {
       baseSearchError = describeSearchFailure(error);
-      sessionExpired = sessionExpired || error is SessionExpiredException;
+      _noteSearchFailure(error);
       baseSearchResults = const [];
     } finally {
       isBaseSearching = false;
@@ -510,6 +560,14 @@ class ReachTrailController extends ChangeNotifier {
       throw const PlaceSearchConfigurationException(searchUnavailableMessage);
     }
     return service;
+  }
+
+  void _noteSearchFailure(Object error) {
+    if (error is! SessionExpiredException || sessionExpired) {
+      return;
+    }
+    sessionExpired = true;
+    _onSessionExpired?.call();
   }
 
   void clearSessionExpired() {
@@ -885,9 +943,13 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
     await widget.authService.signOut();
   }
 
+  bool get _needsReauthentication =>
+      widget.controller.sessionExpired || widget.authService.sessionExpired;
+
   /// Re-runs the sign-in flow after the proxy rejected the session token.
   Future<void> _reauthenticate() async {
     widget.controller.clearSessionExpired();
+    widget.authService.clearSessionExpired();
     await widget.authService.signIn();
   }
 
@@ -955,6 +1017,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
         _RegisterTab(
           controller: controller,
           searchUnavailableReason: widget.authService.searchUnavailableReason,
+          sessionExpired: widget.authService.sessionExpired,
           onReauthenticate: _reauthenticate,
         ),
         _MapTab(controller: controller),
@@ -992,6 +1055,17 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
             appBar: AppBar(
               title: const Text('ReachTrail'),
               actions: [
+                // An expired session is not confined to the Register tab: the
+                // way back in has to be reachable from wherever the user is.
+                if (_needsReauthentication)
+                  IconButton(
+                    tooltip: '再サインインが必要です',
+                    onPressed: _reauthenticate,
+                    icon: Icon(
+                      Icons.warning_amber_rounded,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                 if (widget.authService.currentUser case final user?)
                   Flexible(
                     child: Padding(
@@ -1768,7 +1842,6 @@ class _BaseLocationPickerMap extends StatelessWidget {
                         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                     userAgentPackageName: tileUserAgentPackageName,
                   ),
-                  const _OpenStreetMapAttribution(),
                   if (selectedPoint != null)
                     MarkerLayer(
                       markers: [
@@ -1784,6 +1857,8 @@ class _BaseLocationPickerMap extends StatelessWidget {
                         ),
                       ],
                     ),
+                  // Last so no layer can be drawn over the attribution.
+                  const _OpenStreetMapAttribution(),
                 ],
               ),
             ),
@@ -1798,6 +1873,7 @@ class _RegisterTab extends StatefulWidget {
   const _RegisterTab({
     required this.controller,
     required this.searchUnavailableReason,
+    required this.sessionExpired,
     required this.onReauthenticate,
   });
 
@@ -1805,6 +1881,8 @@ class _RegisterTab extends StatefulWidget {
 
   /// Non-null while the app runs offline on a cached session.
   final String? searchUnavailableReason;
+  /// True when the auth service itself has seen the session rejected.
+  final bool sessionExpired;
   final Future<void> Function() onReauthenticate;
 
   @override
@@ -1908,7 +1986,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                 ),
               if (widget.searchUnavailableReason case final reason?)
                 _NoticeBanner(message: reason, icon: Icons.cloud_off),
-              if (controller.sessionExpired)
+              if (widget.sessionExpired || controller.sessionExpired)
                 _NoticeBanner(
                   message: 'ログインセッションの有効期限が切れました。再度サインインすると検索を再開できます。',
                   icon: Icons.lock_clock,
@@ -2891,7 +2969,6 @@ class _CandidateMap extends StatelessWidget {
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: tileUserAgentPackageName,
             ),
-            const _OpenStreetMapAttribution(),
             if (baseLocation != null && selectedPlace != null)
               PolylineLayer(
                 polylines: [
@@ -2942,6 +3019,8 @@ class _CandidateMap extends StatelessWidget {
                 ),
               ],
             ),
+            // Last so no marker or polyline can be drawn over the attribution.
+            const _OpenStreetMapAttribution(),
           ],
         ),
       ),
@@ -2955,13 +3034,11 @@ class _OpenStreetMapAttribution extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const RichAttributionWidget(
-      alignment: AttributionAlignment.bottomLeft,
-      showFlutterMapAttribution: false,
-      attributions: [
-        TextSourceAttribution('© OpenStreetMap contributors'),
-        TextSourceAttribution('www.openstreetmap.org/copyright'),
-      ],
+    // Simple rather than rich: the rich widget hides the credit behind a badge
+    // the user has to tap, which does not count as visible attribution.
+    return const SimpleAttributionWidget(
+      alignment: Alignment.bottomLeft,
+      source: Text('OpenStreetMap contributors'),
     );
   }
 }
@@ -3775,7 +3852,11 @@ class _RecordSheetState extends State<RecordSheet> {
     final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
-      firstDate: DateTime(2020),
+      // A record that already stores an older visit must not open a picker
+      // that cannot represent it.
+      firstDate: _visitedAt.isBefore(DateTime(2020))
+          ? DateTime(_visitedAt.year)
+          : DateTime(2020),
       // A visit cannot have happened in the future; the only exception is a
       // record that already stores one, which must stay selectable.
       lastDate: _visitedAt.isAfter(now) ? _visitedAt : now,
@@ -4976,7 +5057,10 @@ class RecordCardHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
+        // flex: 0 so the date takes the width it needs and the name gives way,
+        // rather than the two sharing the leftover space and both ellipsising.
         Flexible(
+          flex: 0,
           child: Text(
             formatVisitedDate(visitedAt),
             maxLines: 1,
