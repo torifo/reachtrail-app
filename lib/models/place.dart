@@ -16,6 +16,7 @@ class Place {
     this.elevatorRideCount,
     this.category = '',
     this.rawPayload = '',
+    this.isPlaceholder = false,
   });
 
   final String id;
@@ -34,6 +35,12 @@ class Place {
   final int? elevatorRideCount;
   final String category;
   final String rawPayload;
+
+  /// True for a stand-in built from a snapshot that has no usable coordinates.
+  ///
+  /// Never serialised: such a place exists only so the record list stays
+  /// readable, and it must never be written back as if it were real data.
+  final bool isPlaceholder;
 
   Place copyWith({
     String? id,

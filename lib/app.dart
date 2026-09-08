@@ -161,6 +161,9 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   }
 }
 
+/// Shown in place of a name the snapshot never had.
+const String placeholderPlaceName = '位置情報のない記録';
+
 /// Decodes a stored place snapshot for display.
 ///
 /// A snapshot written before coordinates were required (or corrupted since)
@@ -176,10 +179,11 @@ Place placeFromSnapshot(Map<String, dynamic> snapshot) {
     id: '${snapshot['id'] ?? ''}',
     provider: '${snapshot['provider'] ?? ''}',
     providerPlaceId: '${snapshot['providerPlaceId'] ?? ''}',
-    name: storedName.isEmpty ? '位置情報のない記録' : storedName,
+    name: storedName.isEmpty ? placeholderPlaceName : storedName,
     lat: 0,
     lng: 0,
     address: '${snapshot['address'] ?? ''}',
+    isPlaceholder: true,
   );
 }
 
@@ -2030,7 +2034,7 @@ class _RegisterTabState extends State<_RegisterTab> {
       // which the close button and the back gesture both honour.
       enableDrag: false,
       builder: (context) =>
-          _RecordSheet(controller: widget.controller, initialPlace: place),
+          RecordSheet(controller: widget.controller, initialPlace: place),
     );
     if (saved == true && context.mounted) {
       ScaffoldMessenger.of(
@@ -3238,8 +3242,12 @@ String _formatRawPayload(String rawPayload) {
   return encoder.convert(parsed);
 }
 
-class _RecordSheet extends StatefulWidget {
-  const _RecordSheet({
+/// The create/edit form for a record.
+///
+/// Public so a widget test can pump it directly.
+class RecordSheet extends StatefulWidget {
+  const RecordSheet({
+    super.key,
     required this.controller,
     this.initialPlace,
     this.existingRecord,
@@ -3250,10 +3258,10 @@ class _RecordSheet extends StatefulWidget {
   final DineChallengeRecord? existingRecord;
 
   @override
-  State<_RecordSheet> createState() => _RecordSheetState();
+  State<RecordSheet> createState() => _RecordSheetState();
 }
 
-class _RecordSheetState extends State<_RecordSheet> {
+class _RecordSheetState extends State<RecordSheet> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _addressController;
@@ -3285,7 +3293,16 @@ class _RecordSheetState extends State<_RecordSheet> {
   void initState() {
     super.initState();
     final place = widget.initialPlace;
-    _nameController = TextEditingController(text: place?.name ?? '');
+    // A placeholder carries fabricated data (0, 0 and a stand-in name) purely
+    // so the record list stays readable. Offering it back as if the user had
+    // typed it would let a save write those coordinates for real, so the
+    // fields start empty and the form's own required rules take over.
+    final isPlaceholder = place?.isPlaceholder ?? false;
+    _nameController = TextEditingController(
+      text: isPlaceholder && place!.name == placeholderPlaceName
+          ? ''
+          : place?.name ?? '',
+    );
     _addressController = TextEditingController(text: place?.address ?? '');
     _buildingController = TextEditingController(
       text: place?.buildingName ?? '',
@@ -3299,8 +3316,12 @@ class _RecordSheetState extends State<_RecordSheet> {
     _elevatorRideCountController = TextEditingController(
       text: place?.elevatorRideCount?.toString() ?? '',
     );
-    _latController = TextEditingController(text: place?.lat.toString() ?? '');
-    _lngController = TextEditingController(text: place?.lng.toString() ?? '');
+    _latController = TextEditingController(
+      text: isPlaceholder ? '' : place?.lat.toString() ?? '',
+    );
+    _lngController = TextEditingController(
+      text: isPlaceholder ? '' : place?.lng.toString() ?? '',
+    );
     _routeDistanceController = TextEditingController(
       text: widget.existingRecord?.routeDistanceMeters.toStringAsFixed(0) ?? '',
     );
@@ -3364,7 +3385,14 @@ class _RecordSheetState extends State<_RecordSheet> {
   ];
 
   void _markDirty() {
-    if (!_isDirty) {
+    if (_isDirty) {
+      return;
+    }
+    // Without a rebuild the PopScope keeps its stale `canPop: true` and the
+    // back gesture discards the entry without asking.
+    if (mounted) {
+      setState(() => _isDirty = true);
+    } else {
       _isDirty = true;
     }
   }
@@ -3486,10 +3514,10 @@ class _RecordSheetState extends State<_RecordSheet> {
                     return ChoiceChip(
                       label: Text(type == DineType.dineIn ? '店内飲食' : 'テイクアウト'),
                       selected: _dineType == type,
-                      onSelected: (_) => setState(() {
+                      onSelected: (_) {
                         _markDirty();
-                        _dineType = type;
-                      }),
+                        setState(() => _dineType = type);
+                      },
                     );
                   }).toList(),
                 ),
@@ -3646,10 +3674,10 @@ class _RecordSheetState extends State<_RecordSheet> {
           title: const Text('店舗側にエレベータあり'),
           subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
           value: _hasElevator,
-          onChanged: (value) => setState(() {
+          onChanged: (value) {
             _markDirty();
-            _hasElevator = value;
-          }),
+            setState(() => _hasElevator = value);
+          },
         ),
         if (_hasElevator)
           TextFormField(
@@ -3763,8 +3791,8 @@ class _RecordSheetState extends State<_RecordSheet> {
     if (time == null || !mounted) {
       return;
     }
+    _markDirty();
     setState(() {
-      _markDirty();
       _visitedAt = DateTime(
         date.year,
         date.month,
@@ -3777,6 +3805,13 @@ class _RecordSheetState extends State<_RecordSheet> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    if (lat == null || lng == null) {
+      // The validator above already says so on the fields themselves; this is
+      // the last guard against ever storing a coordinate-less place.
       return;
     }
     setState(() => _submitting = true);
@@ -3792,8 +3827,8 @@ class _RecordSheetState extends State<_RecordSheet> {
       providerPlaceId:
           widget.initialPlace?.providerPlaceId ?? 'manual-${_newLocalId()}',
       name: _nameController.text.trim(),
-      lat: double.parse(_latController.text.trim()),
-      lng: double.parse(_lngController.text.trim()),
+      lat: lat,
+      lng: lng,
       address: _addressController.text.trim(),
       buildingName: _buildingController.text.trim(),
       floorLabel: _floorLabelController.text.trim(),
@@ -4138,7 +4173,7 @@ class _MapTabState extends State<_MapTab> {
       context: context,
       isScrollControlled: true,
       enableDrag: false,
-      builder: (context) => _RecordSheet(
+      builder: (context) => RecordSheet(
         controller: widget.controller,
         initialPlace: placeFromSnapshot(record.placeSnapshot),
         existingRecord: record,
@@ -4761,7 +4796,7 @@ class _RecordsTab extends StatelessWidget {
                         context: context,
                         isScrollControlled: true,
                         enableDrag: false,
-                        builder: (context) => _RecordSheet(
+                        builder: (context) => RecordSheet(
                           controller: controller,
                           initialPlace: placeFromSnapshot(record.placeSnapshot),
                           existingRecord: record,
