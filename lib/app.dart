@@ -1633,17 +1633,38 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     });
   }
 
+  /// Copies the typed search text into the base-location form.
+  ///
+  /// The address is always replaced (that is what the button promises); the
+  /// name is only filled when it is still empty or the default. Coordinates
+  /// are never guessed from free text, so the user is told to tap the map
+  /// unless a point has already been selected.
   void _useTypedAddressAsBase() {
     final query = _searchController.text.trim();
+    final messenger = ScaffoldMessenger.of(context);
+    if (query.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('先に建物名や住所を入力してください。')),
+      );
+      return;
+    }
     setState(() {
       if (_nameController.text.trim().isEmpty ||
           _nameController.text == 'Office') {
-        _nameController.text = query.isEmpty ? 'Base' : query;
+        _nameController.text = query;
       }
-      if (_addressController.text.trim().isEmpty) {
-        _addressController.text = query;
-      }
+      _addressController.text = query;
     });
+    final needsPoint = _selectedLat == null || _selectedLng == null;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          needsPoint
+              ? '住所を反映しました。下の地図をタップして位置を指定してください。'
+              : '住所を反映しました。',
+        ),
+      ),
+    );
   }
 
   void _selectBasePoint(latlong.LatLng point) {
