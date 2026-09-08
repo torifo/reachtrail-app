@@ -90,30 +90,30 @@ void main() {
         client.requests.single.url.toString(),
         'https://api.example.test/me',
       );
-      expect(
-        client.requests.single.headers['Authorization'],
-        'Bearer token-1',
-      );
+      expect(client.requests.single.headers['Authorization'], 'Bearer token-1');
     });
 
-    test('a rejected session stays in the app and asks for a re-sign-in', () async {
-      await _cacheSession();
-      final service = GoogleAuthService(
-        configService: _StubConfigService(),
-        httpClient: _RecordingClient((_) => http.Response('', 401)),
-      );
-      addTearDown(service.dispose);
+    test(
+      'a rejected session stays in the app and asks for a re-sign-in',
+      () async {
+        await _cacheSession();
+        final service = GoogleAuthService(
+          configService: _StubConfigService(),
+          httpClient: _RecordingClient((_) => http.Response('', 401)),
+        );
+        addTearDown(service.dispose);
 
-      await service.initialize();
+        await service.initialize();
 
-      expect(service.isSignedIn, isTrue);
-      expect(service.sessionExpired, isTrue);
-      // The dead token is dropped, but the account stays named on screen.
-      expect(service.currentUser!.sessionToken, isEmpty);
-      expect(service.currentUser!.email, 'user@example.com');
-      expect(await SessionCacheService().load(), isNull);
-      expect(service.usedLightweightAuthentication, isFalse);
-    });
+        expect(service.isSignedIn, isTrue);
+        expect(service.sessionExpired, isTrue);
+        // The dead token is dropped, but the account stays named on screen.
+        expect(service.currentUser!.sessionToken, isEmpty);
+        expect(service.currentUser!.email, 'user@example.com');
+        expect(await SessionCacheService().load(), isNull);
+        expect(service.usedLightweightAuthentication, isFalse);
+      },
+    );
 
     test('an unreachable server keeps the session and goes offline', () async {
       await _cacheSession();
@@ -196,28 +196,106 @@ void main() {
     });
   });
 
-  group('resume', () {
-    test('refreshSilently re-checks the session without any Google UI', () async {
+  group('a later response retires the offline banner', () {
+    /// Fails the first check, then answers with [status] — the shape of every
+    /// "the network came back" case.
+    Future<GoogleAuthService> offlineThenStatus(int status) async {
       await _cacheSession();
-      final client = _RecordingClient((_) => http.Response('{}', 200));
+      var reachable = false;
       final service = GoogleAuthService(
         configService: _StubConfigService(),
-        httpClient: client,
+        httpClient: _RecordingClient((_) {
+          if (!reachable) {
+            throw const SocketException('no route to host');
+          }
+          return http.Response('{}', status);
+        }),
       );
       addTearDown(service.dispose);
       await service.initialize();
-      expect(client.requests, hasLength(1));
-
-      // Throttled: a resume moments after the startup check does nothing.
-      await service.refreshSilently();
-      expect(client.requests, hasLength(1));
-
+      expect(service.isOffline, isTrue);
+      reachable = true;
       service.debugResetSessionCheckThrottle();
       await service.refreshSilently();
+      return service;
+    }
 
-      expect(client.requests, hasLength(2));
-      expect(service.usedLightweightAuthentication, isFalse);
+    test('a 404 takes the banner down', () async {
+      final service = await offlineThenStatus(404);
+
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
+      expect(service.sessionExpired, isFalse);
+      expect(service.isSignedIn, isTrue);
     });
+
+    test('a 500 takes the banner down', () async {
+      final service = await offlineThenStatus(500);
+
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
+      expect(service.sessionExpired, isFalse);
+    });
+
+    test('a 401 expires the session without also claiming offline', () async {
+      final service = await offlineThenStatus(401);
+
+      expect(service.sessionExpired, isTrue);
+      // Two explanations for one failure is one too many: the server answered,
+      // so the honest story is the rejected token, not a lost network.
+      expect(service.isOffline, isFalse);
+      expect(service.searchUnavailableReason, isNull);
+    });
+
+    test(
+      'a check that never reached the server does not arm the throttle',
+      () async {
+        await _cacheSession();
+        final client = _RecordingClient(
+          (_) => throw const SocketException('no route to host'),
+        );
+        final service = GoogleAuthService(
+          configService: _StubConfigService(),
+          httpClient: client,
+        );
+        addTearDown(service.dispose);
+        await service.initialize();
+        expect(client.requests, hasLength(1));
+
+        // No response arrived, so nothing was learned and the next resume must
+        // be free to try again immediately.
+        await service.refreshSilently();
+
+        expect(client.requests, hasLength(2));
+      },
+    );
+  });
+
+  group('resume', () {
+    test(
+      'refreshSilently re-checks the session without any Google UI',
+      () async {
+        await _cacheSession();
+        final client = _RecordingClient((_) => http.Response('{}', 200));
+        final service = GoogleAuthService(
+          configService: _StubConfigService(),
+          httpClient: client,
+        );
+        addTearDown(service.dispose);
+        await service.initialize();
+        expect(client.requests, hasLength(1));
+
+        // Throttled: a resume moments after the startup check does nothing.
+        await service.refreshSilently();
+        expect(client.requests, hasLength(1));
+
+        service.debugResetSessionCheckThrottle();
+        await service.refreshSilently();
+
+        expect(client.requests, hasLength(2));
+        expect(service.usedLightweightAuthentication, isFalse);
+      },
+    );
 
     test('refreshSilently does nothing without a session', () async {
       final client = _RecordingClient((_) => http.Response('{}', 200));

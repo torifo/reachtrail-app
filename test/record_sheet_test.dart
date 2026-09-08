@@ -27,26 +27,28 @@ class _StubConfigService extends LocalConfigService {
   Future<LocalConfig> load() async => _config;
 }
 
-DineChallengeRecord _record({required Map<String, dynamic> snapshot}) =>
-    DineChallengeRecord(
-      id: 'rec-1',
-      baseLocationId: 'base-1',
-      placeId: 'place-1',
-      placeSnapshot: snapshot,
-      visitedAt: DateTime(2026, 3, 4, 12, 30),
-      timeLimitMinutes: 45,
-      dineType: DineType.dineIn,
-      menu: 'カレー',
-      price: 1200,
-      paymentMethod: '現金',
-      memo: '',
-      straightLineDistanceMeters: 120,
-      routeDistanceMeters: 150,
-      baseVerticalFloors: 9,
-      placeVerticalFloors: 0,
-      difficultyScore: 42,
-      scoreVersion: currentScoreVersion,
-    );
+DineChallengeRecord _record({
+  required Map<String, dynamic> snapshot,
+  DateTime? visitedAt,
+}) => DineChallengeRecord(
+  id: 'rec-1',
+  baseLocationId: 'base-1',
+  placeId: 'place-1',
+  placeSnapshot: snapshot,
+  visitedAt: visitedAt ?? DateTime(2026, 3, 4, 12, 30),
+  timeLimitMinutes: 45,
+  dineType: DineType.dineIn,
+  menu: 'カレー',
+  price: 1200,
+  paymentMethod: '現金',
+  memo: '',
+  straightLineDistanceMeters: 120,
+  routeDistanceMeters: 150,
+  baseVerticalFloors: 9,
+  placeVerticalFloors: 0,
+  difficultyScore: 42,
+  scoreVersion: currentScoreVersion,
+);
 
 Future<ReachTrailController> _controllerWith(
   List<DineChallengeRecord> records,
@@ -191,10 +193,7 @@ void main() {
     await tester.ensureVisible(find.text('更新する'));
     await tester.pumpAndSettle();
     final submitButton = tester.widget<FilledButton>(
-      find.ancestor(
-        of: find.text('更新する'),
-        matching: find.byType(FilledButton),
-      ),
+      find.ancestor(of: find.text('更新する'), matching: find.byType(FilledButton)),
     );
     expect(submitButton.onPressed, isNull);
     await tester.tap(find.text('更新する'), warnIfMissed: false);
@@ -266,6 +265,46 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('入力内容を破棄しますか？'), findsNothing);
+  });
+
+  testWidgets('a second record for the same place today has to be confirmed', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    const place = Place(
+      id: 'place-1',
+      provider: 'manual',
+      providerPlaceId: 'manual-1',
+      name: 'Curry Stand',
+      lat: 35.682,
+      lng: 139.768,
+      address: '東京都千代田区',
+    );
+    // A new sheet visits "now", so the clash only exists if the record it is
+    // compared against sits on today's date too.
+    final controller = await _controllerWith([
+      _record(snapshot: place.toJson(), visitedAt: DateTime.now()),
+    ]);
+    addTearDown(controller.dispose);
+    expect(controller.records, hasLength(1));
+
+    await _pumpSheet(tester, controller: controller, initialPlace: place);
+
+    await tester.ensureVisible(find.text('保存する'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存する'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('今日はすでに記録があります'), findsOneWidget);
+
+    await tester.tap(find.text('やめる'));
+    await tester.pumpAndSettle();
+
+    // Backing out saves nothing: the duplicate is refused, not queued.
+    expect(controller.records, hasLength(1));
+    expect(await PersistenceService().loadRecords(), hasLength(1));
   });
 
   testWidgets('typing and then undoing it disarms the discard prompt', (
