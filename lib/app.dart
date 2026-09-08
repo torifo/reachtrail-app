@@ -1220,7 +1220,7 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
         content: const Text(
           'ReachTrailのサーバーに保存されているアカウント情報（Googleアカウントの識別子・'
           'メールアドレス・表示名・アイコン）を削除します。\n\n'
-          'あわせて、この端末に保存されている基準地点・登録した店舗・チャレンジ記録も'
+          'あわせて、この端末に保存されている基準地点・登録した店舗・記録も'
           'すべて消去され、サインアウトします。\n\n'
           'この操作は取り消せません。',
         ),

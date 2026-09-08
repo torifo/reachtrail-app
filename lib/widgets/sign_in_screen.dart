@@ -178,7 +178,7 @@ class _SignInCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Sign In',
+              'サインイン',
               style: theme.textTheme.titleMedium?.copyWith(
                 letterSpacing: 0.4,
                 color: const Color(0xFF0F766E),
@@ -261,7 +261,7 @@ class _HeroPanel extends StatelessWidget {
             border: Border.all(color: const Color(0x1A0F172A)),
           ),
           child: Text(
-            'Dine Distance Tracker',
+            '外食までの距離を記録する',
             style: theme.textTheme.labelLarge?.copyWith(
               color: const Color(0xFF0F766E),
               fontWeight: FontWeight.w700,
@@ -290,24 +290,24 @@ class _HeroPanel extends StatelessWidget {
           spacing: 10,
           runSpacing: 10,
           children: const [
-            _Tag(label: 'Google Sign-In'),
-            _Tag(label: 'Yahoo'),
-            _Tag(label: 'Building + Floor Fallback'),
+            _Tag(label: 'Google サインイン'),
+            _Tag(label: 'Yahoo 検索'),
+            _Tag(label: '建物・階数で補完'),
           ],
         ),
         const SizedBox(height: 28),
         const _HeroFeature(
-          title: 'Search',
+          title: '探す',
           description: '店名で候補を探し、見つからない時は建物名と住所から補完します。',
         ),
         const SizedBox(height: 14),
         const _HeroFeature(
-          title: 'Measure',
+          title: '測る',
           description: '基準地点からの距離と階数を使って、移動の負荷を可視化します。',
         ),
         const SizedBox(height: 14),
         const _HeroFeature(
-          title: 'Record',
+          title: '記録する',
           description: '候補選択でも手入力でも、後から見返せる形で外食記録を残せます。',
         ),
       ],
