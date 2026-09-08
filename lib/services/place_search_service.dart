@@ -68,7 +68,38 @@ class PlaceSearchConfigurationException implements Exception {
   String toString() => message;
 }
 
+/// Thrown when the API proxy rejects the session token (HTTP 401).
+///
+/// Typed separately so the UI can offer a re-sign-in action instead of only
+/// printing the message.
+class SessionExpiredException extends PlaceSearchConfigurationException {
+  const SessionExpiredException()
+    : super('ログインセッションの有効期限が切れました。再度サインインしてください。');
+}
+
 enum SearchPurpose { dinePlace, baseLocation }
+
+/// Builds the Yahoo! Local Search query string.
+///
+/// `dist` is only meaningful together with `lat`/`lon`; sending it without a
+/// base location makes Yahoo reject the request, so a nearby-only search with
+/// no base simply searches without the radius filter.
+Map<String, String> buildYahooSearchParams({
+  required String query,
+  required BaseLocation? baseLocation,
+  required bool nearbyOnly,
+}) {
+  return {
+    'query': query,
+    'output': 'json',
+    'detail': 'full',
+    'results': '20',
+    if (baseLocation != null) 'sort': 'geo',
+    if (baseLocation != null) 'lat': '${baseLocation.lat}',
+    if (baseLocation != null) 'lon': '${baseLocation.lng}',
+    if (nearbyOnly && baseLocation != null) 'dist': '$walkingSearchRadiusKm',
+  };
+}
 
 abstract class PlaceSearchService {
   Future<List<Place>> search({
@@ -315,16 +346,11 @@ class YahooLocalSearchService implements PlaceSearchService {
     required BaseLocation? baseLocation,
     required bool nearbyOnly,
   }) async {
-    final params = {
-      'query': query,
-      'output': 'json',
-      'detail': 'full',
-      'results': '20',
-      if (baseLocation != null) 'sort': 'geo',
-      if (baseLocation != null) 'lat': '${baseLocation.lat}',
-      if (baseLocation != null) 'lon': '${baseLocation.lng}',
-      if (nearbyOnly) 'dist': '$walkingSearchRadiusKm',
-    };
+    final params = buildYahooSearchParams(
+      query: query,
+      baseLocation: baseLocation,
+      nearbyOnly: nearbyOnly,
+    );
 
     final Uri uri;
     final headers = <String, String>{};
@@ -351,9 +377,7 @@ class YahooLocalSearchService implements PlaceSearchService {
         .get(uri, headers: headers)
         .timeout(const Duration(seconds: 20));
     if (response.statusCode == 401) {
-      throw const PlaceSearchConfigurationException(
-        'ログインセッションの有効期限が切れました。再度サインインしてください。',
-      );
+      throw const SessionExpiredException();
     }
     if (response.statusCode == 429) {
       throw const PlaceSearchConfigurationException(
