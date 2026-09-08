@@ -874,6 +874,25 @@ class ReachTrailController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Puts a deleted record back, along with the place it referenced.
+  ///
+  /// `deleteRecord` also drops a place no other record uses, so restoring the
+  /// record alone would leave it pointing at nothing; the snapshot it carries
+  /// is enough to rebuild that place.
+  Future<void> restoreRecord(DineChallengeRecord record) async {
+    if (records.any((existing) => existing.id == record.id)) {
+      return;
+    }
+    final place = Place.tryFromJson(record.placeSnapshot);
+    if (place != null && !places.any((item) => item.id == place.id)) {
+      places = [...places, place];
+      await _persistence.savePlaces(places);
+    }
+    records = [record, ...records];
+    await _persistence.saveRecords(records);
+    notifyListeners();
+  }
+
   Future<int> deleteRecordsForPlace(
     String placeId, {
     String? baseLocationId,
@@ -2034,7 +2053,10 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('キャンセル'),
           ),
-          FilledButton.tonalIcon(
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
             onPressed: () => Navigator.of(context).pop(true),
             icon: const Icon(Icons.delete_outline),
             label: const Text('削除'),
@@ -2161,7 +2183,9 @@ class _BaseCandidateTile extends StatelessWidget {
                   _Tag(label: place.provider.toUpperCase()),
                   if (place.floorLabel.isNotEmpty)
                     _Tag(label: place.floorLabel),
-                  if (place.category.isNotEmpty) _Tag(label: place.category),
+                  if (place.category.isNotEmpty &&
+                      place.category != baseLocationCategoryMarker)
+                    _Tag(label: place.category),
                 ],
               ),
             ],
@@ -2734,7 +2758,9 @@ class _PlaceResultTile extends StatelessWidget {
                     _Tag(label: place.buildingName),
                   if (place.floorLabel.isNotEmpty)
                     _Tag(label: place.floorLabel),
-                  if (place.category.isNotEmpty) _Tag(label: place.category),
+                  if (place.category.isNotEmpty &&
+                      place.category != baseLocationCategoryMarker)
+                    _Tag(label: place.category),
                   if (distance != null)
                     _Tag(label: '基準地点から ${formatMeters(distance)}'),
                 ],
@@ -2908,7 +2934,9 @@ class _BuildingCandidateTile extends StatelessWidget {
               children: [
                 const _Tag(label: '建物'),
                 if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
-                if (place.category.isNotEmpty) _Tag(label: place.category),
+                if (place.category.isNotEmpty &&
+                    place.category != baseLocationCategoryMarker)
+                  _Tag(label: place.category),
               ],
             ),
             Text(
@@ -3392,6 +3420,26 @@ class _CandidateMap extends StatelessWidget {
   final String? selectedPlaceId;
   final ValueChanged<Place> onSelectPlace;
 
+  /// A camera frame covering the base location and every place on the map.
+  ///
+  /// Null when there is only one point to show, where a bounds fit would zoom
+  /// to the maximum level on a single coordinate.
+  CameraFit? _cameraFit() {
+    final points = <latlong.LatLng>[
+      if (baseLocation != null)
+        latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
+      for (final place in places) latlong.LatLng(place.lat, place.lng),
+    ];
+    if (points.length < 2) {
+      return null;
+    }
+    return CameraFit.bounds(
+      bounds: LatLngBounds.fromPoints(points),
+      padding: const EdgeInsets.all(56),
+      maxZoom: 16.5,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final selectedPlace = places
@@ -3405,16 +3453,31 @@ class _CandidateMap extends StatelessWidget {
       baseLocation?.lat ?? centerPlace!.lat,
       baseLocation?.lng ?? centerPlace!.lng,
     );
+    // Everything the map is meant to show, so it opens framing all of it
+    // instead of a fixed zoom around the base with the places off-screen.
+    final fit = _cameraFit();
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: _MapReloadable(
-        onReload: () => mapController.move(center, 15.5),
+        onReload: () {
+          try {
+            if (fit == null) {
+              mapController.move(center, 15.5);
+            } else {
+              mapController.fitCamera(fit);
+            }
+          } catch (_) {
+            // The map may not be attached yet; the rebuild already reset the
+            // camera to the same frame.
+          }
+        },
         builder: (context) => FlutterMap(
           mapController: mapController,
           options: MapOptions(
             initialCenter: center,
             initialZoom: 15.5,
+            initialCameraFit: fit,
             onTap: (_, point) {},
           ),
           children: [
@@ -4138,7 +4201,7 @@ class _RecordSheetState extends State<RecordSheet> {
                         onPressed: _pickDateTime,
                         icon: const Icon(Icons.event),
                         label: Text(
-                          '${_visitedAt.year}/${_visitedAt.month}/${_visitedAt.day} ${_visitedAt.hour.toString().padLeft(2, '0')}:${_visitedAt.minute.toString().padLeft(2, '0')}',
+                          RecordCardHeader.formatVisitedDate(_visitedAt),
                         ),
                       ),
                     ),
@@ -4801,12 +4864,12 @@ class _MapTabState extends State<_MapTab> {
       padding: const EdgeInsets.all(20),
       children: [
         _SectionCard(
-          title: 'Map',
+          title: '地図',
           // The shared "nearby" view is not built yet, so nothing here promises
           // it.
           subtitle: '現在の基準地点で記録したお店をマップで振り返ります。',
           child: baseLocation == null
-              ? const Text('先に「Base」タブで基準地点を設定してください。')
+              ? const Text('先に「基準」タブで基準地点を設定してください。')
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   spacing: 16,
@@ -4833,8 +4896,8 @@ class _MapTabState extends State<_MapTab> {
         if (baseLocation != null && entries.isNotEmpty) ...[
           const SizedBox(height: 16),
           _SectionCard(
-            title: 'Place Ranking',
-            subtitle: '訪問回数、難易度、距離をお店単位で集約します。共有データ接続後もこの並びをベースにできます。',
+            title: '店舗ランキング',
+            subtitle: '訪問回数、難易度、距離をお店単位で集約します。',
             child: Column(
               spacing: 12,
               children: [
@@ -4912,7 +4975,10 @@ class _MapTabState extends State<_MapTab> {
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('キャンセル'),
           ),
-          FilledButton.tonalIcon(
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
             onPressed: () => Navigator.of(context).pop(true),
             icon: const Icon(Icons.delete_outline),
             label: const Text('削除'),
@@ -5004,7 +5070,7 @@ class _MyMapView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Text('この基準地点でまだお店が記録されていません。「Register」タブから追加してください。');
+      return const Text('この基準地点でまだお店が記録されていません。「登録」タブから追加してください。');
     }
 
     return Column(
@@ -5017,15 +5083,15 @@ class _MyMapView extends StatelessWidget {
           children: [
             _MetricChip(
               icon: Icons.storefront,
-              label: 'Places',
-              value: '${entries.length}',
+              label: '店舗',
+              value: '${entries.length} 件',
             ),
             _MetricChip(
               icon: Icons.receipt_long,
-              label: 'Records',
-              value: '$recordCount',
+              label: '記録',
+              value: '$recordCount 件',
             ),
-            _MetricChip(icon: Icons.radar, label: 'View', value: 'Radar + Map'),
+            _MetricChip(icon: Icons.radar, label: '表示', value: 'レーダー＋地図'),
           ],
         ),
         _SharedPlaceMapOverview(
@@ -5187,11 +5253,13 @@ class _SelectedSharedPlaceSummary extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _Tag(label: '${entry.visitCount} records'),
+                _Tag(label: '${entry.visitCount} 件'),
                 _Tag(
-                  label: 'avg ${entry.averageDifficulty.toStringAsFixed(0)}',
+                  label: '平均 ${formatCount(entry.averageDifficulty)}',
                 ),
-                _Tag(label: 'best ${entry.bestRouteDistanceMeters.round()}m'),
+                _Tag(
+                  label: 'ベスト ${formatMeters(entry.bestRouteDistanceMeters)}',
+                ),
                 if (entry.place.floorLabel.isNotEmpty)
                   _Tag(label: entry.place.floorLabel),
               ],
@@ -5261,14 +5329,13 @@ class _SharedPlaceRankTile extends StatelessWidget {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        _Tag(label: '${entry.visitCount} records'),
+                        _Tag(label: '${entry.visitCount} 件'),
                         _Tag(
-                          label:
-                              'avg ${entry.averageDifficulty.toStringAsFixed(0)}',
+                          label: '平均 ${formatCount(entry.averageDifficulty)}',
                         ),
                         _Tag(
                           label:
-                              'route ${entry.bestRouteDistanceMeters.round()}m',
+                              '経路 ${formatMeters(entry.bestRouteDistanceMeters)}',
                         ),
                       ],
                     ),
@@ -5405,29 +5472,44 @@ class _RecordsTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // With nothing recorded yet the Best cards, the sort chips and the score
+    // maintenance row are three pieces of furniture around an empty room; one
+    // sentence says more.
+    if (controller.records.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(20),
+        children: const [
+          _SectionCard(
+            title: '記録',
+            subtitle: '外食チャレンジの記録がここに並びます。',
+            child: Text('まだ記録がありません。「登録」タブからお店を記録すると、ここにベスト記録と履歴が表示されます。'),
+          ),
+        ],
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         _SectionCard(
-          title: 'Best',
+          title: 'ベスト記録',
           subtitle: '直線距離、最短距離、縦移動を分けて、移動の重さを見返せます。',
           child: Column(
             spacing: 12,
             children: [
               _BestRecordTile(
-                label: 'Longest route',
+                label: '最長経路',
                 record: controller.bestDistanceRecord,
                 metricBuilder: (record) =>
-                    '${record.routeDistanceMeters.round()}m',
+                    formatMeters(record.routeDistanceMeters),
               ),
               _BestRecordTile(
-                label: 'Highest difficulty',
+                label: '最高難度',
                 record: controller.bestDifficultyRecord,
-                metricBuilder: (record) =>
-                    record.difficultyScore.toStringAsFixed(0),
+                metricBuilder: (record) => formatCount(record.difficultyScore),
               ),
               _BestPlaceTile(
-                label: 'Most visited',
+                label: '最多訪問',
                 entry: controller.mostVisitedPlace,
               ),
             ],
@@ -5435,50 +5517,16 @@ class _RecordsTab extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         _SectionCard(
-          title: 'History',
+          title: '履歴',
           subtitle: '直線距離、最短距離、縦移動を分けて残し、後から評価を見直せます。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 16,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '現行スコアバージョン: v$currentScoreVersion / 未更新: ${controller.outdatedScoreCount}件',
-                    ),
-                  ),
-                  FilledButton.tonalIcon(
-                    onPressed: controller.records.isEmpty
-                        ? null
-                        : () async {
-                            final messenger = ScaffoldMessenger.of(context);
-                            final int count;
-                            try {
-                              count = await controller.recalculateScores();
-                            } catch (_) {
-                              messenger.showSnackBar(
-                                const SnackBar(
-                                  content: Text(saveFailureMessage),
-                                ),
-                              );
-                              return;
-                            }
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  count == 0
-                                      ? '再計算の差分はありませんでした。'
-                                      : '$count 件のスコアを再計算しました。',
-                                ),
-                              ),
-                            );
-                          },
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('再計算'),
-                  ),
-                ],
-              ),
+              // The score version and its recalculation button are maintenance
+              // plumbing, not something a user can act on; they stay behind a
+              // debug build. `recalculateScores` is still called on a base move.
+              if (kDebugMode) _ScoreMaintenanceRow(controller: controller),
               Wrap(
                 spacing: 8,
                 children: RecordSort.values.map((sort) {
@@ -5494,19 +5542,17 @@ class _RecordsTab extends StatelessWidget {
                   );
                 }).toList(),
               ),
-              if (controller.records.isEmpty)
-                const Text('まだ記録がありません。')
-              else
-                ...controller.sortedRecords.map(
+              ...controller.sortedRecords.map(
                   (record) => _RecordTile(
                     record: record,
                     onEdit: () async {
                       final saved = await showModalBottomSheet<bool>(
                         context: context,
                         isScrollControlled: true,
-      // The sheet can reach the status bar; without this its header would sit
-      // under the clock and the ✕ would be hard to hit.
-      useSafeArea: true,
+                        // The sheet can reach the status bar; without this its
+                        // header would sit under the clock and the ✕ would be
+                        // hard to hit.
+                        useSafeArea: true,
                         enableDrag: false,
                         builder: (context) => RecordSheet(
                           controller: controller,
@@ -5545,7 +5591,10 @@ class _RecordsTab extends StatelessWidget {
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('キャンセル'),
           ),
-          FilledButton.tonalIcon(
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
             onPressed: () => Navigator.of(context).pop(true),
             icon: const Icon(Icons.delete_outline),
             label: const Text('削除'),
@@ -5568,7 +5617,64 @@ class _RecordsTab extends StatelessWidget {
       );
       return;
     }
-    messenger.showSnackBar(const SnackBar(content: Text('記録を削除しました。')));
+    // The deleted record is held here for as long as the notice is on screen,
+    // so a mistake costs a tap rather than the whole entry.
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text('記録を削除しました。'),
+        action: SnackBarAction(
+          label: '元に戻す',
+          onPressed: () => unawaited(controller.restoreRecord(record)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Score-version maintenance, shown only in a debug build.
+class _ScoreMaintenanceRow extends StatelessWidget {
+  const _ScoreMaintenanceRow({required this.controller});
+
+  final ReachTrailController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            '現行スコアバージョン: v$currentScoreVersion / 未更新: ${controller.outdatedScoreCount}件',
+          ),
+        ),
+        FilledButton.tonalIcon(
+          onPressed: controller.records.isEmpty
+              ? null
+              : () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final int count;
+                  try {
+                    count = await controller.recalculateScores();
+                  } catch (_) {
+                    messenger.showSnackBar(
+                      const SnackBar(content: Text(saveFailureMessage)),
+                    );
+                    return;
+                  }
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        count == 0
+                            ? '再計算の差分はありませんでした。'
+                            : '$count 件のスコアを再計算しました。',
+                      ),
+                    ),
+                  );
+                },
+          icon: const Icon(Icons.refresh),
+          label: const Text('再計算'),
+        ),
+      ],
+    );
   }
 }
 
@@ -5609,21 +5715,19 @@ class _RecordTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _Tag(label: 'route ${record.routeDistanceMeters.round()}m'),
+                _Tag(label: '経路 ${formatMeters(record.routeDistanceMeters)}'),
                 _Tag(
                   label:
-                      'straight ${record.straightLineDistanceMeters.round()}m',
+                      '直線 ${formatMeters(record.straightLineDistanceMeters)}',
                 ),
                 _Tag(
                   label:
-                      'vertical ${record.baseVerticalFloors + record.placeVerticalFloors}F',
+                      '高低差 ${record.baseVerticalFloors + record.placeVerticalFloors}F',
                 ),
-                _Tag(
-                  label: 'score ${record.difficultyScore.toStringAsFixed(0)}',
-                ),
+                _Tag(label: 'スコア ${formatCount(record.difficultyScore)}'),
                 if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
                 if (place.entranceFloorLabel.isNotEmpty)
-                  _Tag(label: 'entry ${place.entranceFloorLabel}'),
+                  _Tag(label: '入口 ${place.entranceFloorLabel}'),
                 _Tag(label: place.hasElevator ? 'EVあり' : '階段中心'),
                 if (place.hasElevator && place.elevatorRideCount != null)
                   _Tag(label: 'EV ${place.elevatorRideCount}回'),
@@ -5631,16 +5735,15 @@ class _RecordTile extends StatelessWidget {
                   label: record.dineType == DineType.dineIn ? '店内飲食' : 'テイクアウト',
                 ),
                 _Tag(label: '${record.timeLimitMinutes}分'),
-                _Tag(label: 'v${record.scoreVersion}'),
               ],
             ),
             Text(
               '拠点縦移動 ${record.baseVerticalFloors}F / 店舗縦移動 ${record.placeVerticalFloors}F',
             ),
-            if (record.menu.isNotEmpty) Text('Menu: ${record.menu}'),
-            if (record.price != null) Text('Price: ${record.price}'),
+            if (record.menu.isNotEmpty) Text('メニュー ${record.menu}'),
+            if (record.price != null) Text('価格 ¥${formatCount(record.price!)}'),
             if (record.paymentMethod.isNotEmpty)
-              Text('Payment: ${record.paymentMethod}'),
+              Text('支払い ${record.paymentMethod}'),
             if (record.memo.isNotEmpty) Text(record.memo),
           ],
         ),
@@ -5669,35 +5772,46 @@ class RecordCardHeader extends StatelessWidget {
   final Future<void> Function() onEdit;
   final Future<void> Function() onDelete;
 
+  /// The visit date and time.
+  ///
+  /// Two visits to the same shop on one day are otherwise indistinguishable in
+  /// the list, which is exactly when the user is trying to tell them apart.
   static String formatVisitedDate(DateTime visitedAt) {
     final month = visitedAt.month.toString().padLeft(2, '0');
     final day = visitedAt.day.toString().padLeft(2, '0');
-    return '${visitedAt.year}/$month/$day';
+    final hour = visitedAt.hour.toString().padLeft(2, '0');
+    final minute = visitedAt.minute.toString().padLeft(2, '0');
+    return '${visitedAt.year}/$month/$day $hour:$minute';
   }
 
   @override
   Widget build(BuildContext context) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Name over date rather than side by side: sharing one row, the two
+        // fought for the same width and both truncated as soon as the system
+        // font grew — and the timestamp is the half that cannot be guessed.
         Expanded(
-          child: Text(
-            placeName,
-            style: Theme.of(context).textTheme.titleMedium,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                placeName,
+                style: Theme.of(context).textTheme.titleMedium,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                formatVisitedDate(visitedAt),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
           ),
         ),
         const SizedBox(width: 8),
-        // flex: 0 so the date takes the width it needs and the name gives way,
-        // rather than the two sharing the leftover space and both ellipsising.
-        Flexible(
-          flex: 0,
-          child: Text(
-            formatVisitedDate(visitedAt),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
         PopupMenuButton<String>(
           tooltip: 'この記録の操作',
           onSelected: (value) {
@@ -5707,24 +5821,27 @@ class RecordCardHeader extends StatelessWidget {
               onDelete();
             }
           },
-          itemBuilder: (context) => const [
-            PopupMenuItem(
-              value: 'edit',
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.edit_outlined),
-                title: Text('編集'),
+          itemBuilder: (context) {
+            final errorColor = Theme.of(context).colorScheme.error;
+            return [
+              const PopupMenuItem(
+                value: 'edit',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.edit_outlined),
+                  title: Text('編集'),
+                ),
               ),
-            ),
-            PopupMenuItem(
-              value: 'delete',
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.delete_outline),
-                title: Text('削除'),
+              PopupMenuItem(
+                value: 'delete',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.delete_outline, color: errorColor),
+                  title: Text('削除', style: TextStyle(color: errorColor)),
+                ),
               ),
-            ),
-          ],
+            ];
+          },
         ),
       ],
     );
@@ -5756,15 +5873,23 @@ class _BestRecordTile extends StatelessWidget {
             const Icon(Icons.workspace_premium),
             const SizedBox(width: 12),
             Expanded(
-              // A long store name must not push the trailing metric off the
-              // row; it wraps to two lines and then ellipsises.
-              child: record == null
-                  ? Text('$label: まだ記録なし')
-                  : Text(
-                      '$label: ${placeFromSnapshot(record!.placeSnapshot).name}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              // Label above, shop name below: joined on one line with a colon
+              // they competed for the same row and both truncated as soon as
+              // the system font grew.
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.labelMedium),
+                  Text(
+                    record == null
+                        ? 'まだ記録なし'
+                        : placeFromSnapshot(record!.placeSnapshot).name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ],
+              ),
             ),
             if (record != null)
               Flexible(
@@ -5801,13 +5926,18 @@ class _BestPlaceTile extends StatelessWidget {
             const Icon(Icons.workspace_premium),
             const SizedBox(width: 12),
             Expanded(
-              child: entry == null
-                  ? Text('$label: まだ記録なし')
-                  : Text(
-                      '$label: ${entry!.placeName}',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.labelMedium),
+                  Text(
+                    entry == null ? 'まだ記録なし' : entry!.placeName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ],
+              ),
             ),
             if (entry != null)
               Flexible(
