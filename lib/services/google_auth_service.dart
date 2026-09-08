@@ -6,6 +6,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 
 import 'local_config_service.dart';
+import 'session_cache_service.dart';
 
 class AuthenticatedUser {
   const AuthenticatedUser({
@@ -25,11 +26,19 @@ class AuthenticatedUser {
   final String? photoUrl;
 }
 
+/// Shown while the app runs on a restored session that could not be refreshed.
+const String offlineSearchUnavailableMessage =
+    'オフラインのため店舗検索は利用できません。記録の閲覧と作成はそのまま行えます。';
+
 class GoogleAuthService extends ChangeNotifier {
-  GoogleAuthService({required LocalConfigService configService})
-    : _configService = configService;
+  GoogleAuthService({
+    required LocalConfigService configService,
+    SessionCacheService? sessionCache,
+  }) : _configService = configService,
+       _sessionCache = sessionCache ?? SessionCacheService();
 
   final LocalConfigService _configService;
+  final SessionCacheService _sessionCache;
   final GoogleSignIn _signIn = GoogleSignIn.instance;
   final http.Client _httpClient = http.Client();
   StreamSubscription<GoogleSignInAuthenticationEvent>? _authSubscription;
@@ -45,12 +54,27 @@ class GoogleAuthService extends ChangeNotifier {
   String? errorMessage;
   AuthenticatedUser? currentUser;
 
+  /// True while the app runs on a cached session that could not be refreshed.
+  bool isOffline = false;
+
+  /// Non-null when place search cannot run; the Register tab shows it as a
+  /// neutral banner rather than an error.
+  String? searchUnavailableReason;
+
+  /// True while [currentUser] comes from the local cache and has not yet been
+  /// confirmed by a fresh `/auth/google` exchange.
+  bool _isRestoredSession = false;
+
   bool get isSignedIn => currentUser != null;
 
   Future<void> initialize() async {
     isInitializing = true;
     errorMessage = null;
     notifyListeners();
+
+    // Restore the last session before anything that needs the network, so a
+    // cold start with no connectivity still opens on the home screen.
+    await _restoreCachedSession();
 
     try {
       final config = await _configService.load();
@@ -78,10 +102,51 @@ class GoogleAuthService extends ChangeNotifier {
       // instead of letting sign-in look merely flaky.
       errorMessage = error.message;
     } catch (error) {
-      errorMessage = 'ログインの初期化に失敗しました。通信状況を確認して再度お試しください。';
+      // With a restored session the app stays usable offline, so a failed
+      // refresh is a connectivity notice, not a sign-in error.
+      if (_isRestoredSession) {
+        _markOffline();
+      } else {
+        errorMessage = 'ログインの初期化に失敗しました。通信状況を確認して再度お試しください。';
+      }
     } finally {
       isInitializing = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _restoreCachedSession() async {
+    final cached = await _sessionCache.load();
+    if (cached == null || currentUser != null) {
+      return;
+    }
+    currentUser = AuthenticatedUser(
+      id: cached.userId,
+      email: cached.email,
+      displayName: cached.displayName,
+      photoUrl: cached.photoUrl,
+      idToken: '',
+      sessionToken: cached.sessionToken,
+    );
+    _isRestoredSession = true;
+    notifyListeners();
+  }
+
+  void _markOffline() {
+    isOffline = true;
+    searchUnavailableReason = offlineSearchUnavailableMessage;
+  }
+
+  /// Re-runs Google's silent sign-in without ever blocking or alarming the UI.
+  ///
+  /// Called when the app returns to the foreground: a refreshed session token
+  /// keeps the search proxy working, and a failure simply leaves the cached
+  /// session in place.
+  Future<void> refreshSilently() async {
+    try {
+      await _signIn.attemptLightweightAuthentication();
+    } catch (_) {
+      // A silent refresh that fails must stay silent.
     }
   }
 
@@ -112,7 +177,11 @@ class GoogleAuthService extends ChangeNotifier {
     errorMessage = null;
     _sessionGeneration++;
     currentUser = null;
+    _isRestoredSession = false;
+    isOffline = false;
+    searchUnavailableReason = null;
     notifyListeners();
+    await _clearCachedSession();
     try {
       await _signIn.signOut();
       currentUser = null;
@@ -134,12 +203,23 @@ class GoogleAuthService extends ChangeNotifier {
     if (event is GoogleSignInAuthenticationEventSignOut) {
       _sessionGeneration++;
       currentUser = null;
+      _isRestoredSession = false;
+      isOffline = false;
+      searchUnavailableReason = null;
       errorMessage = null;
+      unawaited(_clearCachedSession());
       notifyListeners();
     }
   }
 
   void _handleAuthenticationError(Object error) {
+    if (_isRestoredSession) {
+      // The user is already inside the app on a cached session; a failed
+      // background refresh must not throw an error at them.
+      _markOffline();
+      notifyListeners();
+      return;
+    }
     if (error is GoogleSignInException) {
       errorMessage = _mapGoogleError(error);
     } else {
@@ -175,10 +255,18 @@ class GoogleAuthService extends ChangeNotifier {
             )
             .timeout(const Duration(seconds: 20));
       } on TimeoutException {
-        _failSignIn(generation, 'サーバーへの接続がタイムアウトしました。通信環境を確認してください。');
+        _failSignIn(
+          generation,
+          'サーバーへの接続がタイムアウトしました。通信環境を確認してください。',
+          keepCachedSession: true,
+        );
         return;
       } catch (error) {
-        _failSignIn(generation, 'サーバーに接続できませんでした。通信環境を確認してください。');
+        _failSignIn(
+          generation,
+          'サーバーに接続できませんでした。通信環境を確認してください。',
+          keepCachedSession: true,
+        );
         return;
       }
 
@@ -217,7 +305,7 @@ class GoogleAuthService extends ChangeNotifier {
         return;
       }
 
-      currentUser = AuthenticatedUser(
+      final authenticatedUser = AuthenticatedUser(
         id: '${user['id'] ?? account.id}',
         email: '${user['email'] ?? account.email}',
         displayName: account.displayName,
@@ -225,7 +313,22 @@ class GoogleAuthService extends ChangeNotifier {
         idToken: idToken,
         sessionToken: sessionToken,
       );
+      currentUser = authenticatedUser;
+      _isRestoredSession = false;
+      isOffline = false;
+      searchUnavailableReason = null;
       errorMessage = null;
+      unawaited(
+        _sessionCache.save(
+          CachedSession(
+            userId: authenticatedUser.id,
+            email: authenticatedUser.email,
+            sessionToken: authenticatedUser.sessionToken,
+            displayName: authenticatedUser.displayName,
+            photoUrl: authenticatedUser.photoUrl,
+          ),
+        ),
+      );
     } finally {
       if (!_disposed) {
         isSigningIn = false;
@@ -237,12 +340,31 @@ class GoogleAuthService extends ChangeNotifier {
   bool _isStale(int generation) =>
       _disposed || generation != _sessionGeneration;
 
-  void _failSignIn(int generation, String message) {
+  void _failSignIn(
+    int generation,
+    String message, {
+    bool keepCachedSession = false,
+  }) {
     if (_isStale(generation)) {
+      return;
+    }
+    if (keepCachedSession && _isRestoredSession) {
+      // Offline start: the cached session is still the best thing we have, so
+      // keep the user inside the app and only disable what needs the network.
+      _markOffline();
       return;
     }
     errorMessage = message;
     currentUser = null;
+    _isRestoredSession = false;
+  }
+
+  Future<void> _clearCachedSession() async {
+    try {
+      await _sessionCache.clear();
+    } catch (_) {
+      // Losing the cache is not worth surfacing; the session is gone anyway.
+    }
   }
 
   /// Deletes the server-side account for the current session.
@@ -277,6 +399,7 @@ class GoogleAuthService extends ChangeNotifier {
     }
 
     if (response.statusCode == 204 || response.statusCode == 200) {
+      await _clearCachedSession();
       return;
     }
     if (response.statusCode == 401) {
@@ -307,10 +430,12 @@ class GoogleAuthService extends ChangeNotifier {
     return const _GoogleSignInConfiguration();
   }
 
-  String _mapGoogleError(GoogleSignInException error) {
+  /// Returns null when there is nothing worth telling the user about.
+  String? _mapGoogleError(GoogleSignInException error) {
     switch (error.code) {
       case GoogleSignInExceptionCode.canceled:
-        return 'サインインをキャンセルしました。';
+        // Dismissing the Google sheet is a decision, not a failure.
+        return null;
       case GoogleSignInExceptionCode.clientConfigurationError:
         return 'Google ログインの設定に問題があります。アプリの再インストールをお試しください。';
       case GoogleSignInExceptionCode.providerConfigurationError:
