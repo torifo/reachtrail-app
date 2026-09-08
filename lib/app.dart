@@ -5,7 +5,8 @@ import 'dart:math' as math;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/foundation.dart' show Listenable, kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show FilteringTextInputFormatter;
+import 'package:flutter/services.dart'
+    show FilteringTextInputFormatter, SystemNavigator;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
@@ -110,6 +111,8 @@ class AccountMenuButton extends StatelessWidget {
     required this.onSwitchAccount,
     required this.onDeleteAccount,
     this.photoUrl,
+    this.displayName,
+    this.email,
     this.enabled = true,
   });
 
@@ -119,6 +122,11 @@ class AccountMenuButton extends StatelessWidget {
 
   /// The signed-in user's Google avatar, when there is one.
   final String? photoUrl;
+
+  /// Who is signed in. Shown as the menu's header rather than in the app bar,
+  /// where it crowded out the app's own name.
+  final String? displayName;
+  final String? email;
 
   /// False while an account operation is already running.
   final bool enabled;
@@ -149,6 +157,24 @@ class AccountMenuButton extends StatelessWidget {
         }
       },
       itemBuilder: (context) => [
+        // Identity, not an action: it names the account the three verbs below
+        // will act on, and is deliberately not selectable.
+        if (_hasIdentity)
+          PopupMenuItem<AccountMenuAction>(
+            enabled: false,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                displayName?.isNotEmpty == true ? displayName! : (email ?? ''),
+                style: Theme.of(context).textTheme.titleSmall,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: displayName?.isNotEmpty == true && email?.isNotEmpty == true
+                  ? Text(email!, overflow: TextOverflow.ellipsis)
+                  : null,
+            ),
+          ),
+        if (_hasIdentity) const PopupMenuDivider(),
         const PopupMenuItem(
           value: AccountMenuAction.signOut,
           child: ListTile(
@@ -161,7 +187,7 @@ class AccountMenuButton extends StatelessWidget {
           value: AccountMenuAction.switchAccount,
           child: ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.switch_account_outlined),
+            leading: Icon(Icons.switch_account),
             title: Text('アカウントを切り替える'),
           ),
         ),
@@ -179,6 +205,9 @@ class AccountMenuButton extends StatelessWidget {
       ],
     );
   }
+
+  bool get _hasIdentity =>
+      displayName?.isNotEmpty == true || email?.isNotEmpty == true;
 }
 
 class _ReachTrailAppState extends State<ReachTrailApp> {
@@ -673,6 +702,17 @@ class ReachTrailController extends ChangeNotifier {
     }
   }
 
+  /// Drops the base-location candidate list once it has served its purpose,
+  /// so a finished search does not linger as a set of tappable stale options.
+  void clearBaseSearchResults() {
+    if (baseSearchResults.isEmpty && baseSearchError == null) {
+      return;
+    }
+    baseSearchResults = const [];
+    baseSearchError = null;
+    notifyListeners();
+  }
+
   /// A null search service means config never loaded; a friendly message beats
   /// a null-dereference crash.
   PlaceSearchService _requireSearchService() {
@@ -1012,6 +1052,11 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
   int _index = 0;
   bool _isDeletingAccount = false;
 
+  /// When the last back gesture on the first tab was seen, so the second one
+  /// within [_exitConfirmationWindow] is the one that actually leaves.
+  DateTime? _lastExitRequestAt;
+  static const _exitConfirmationWindow = Duration(seconds: 2);
+
   static const _desktopBreakpoint = 1080.0;
   static const _contentMaxWidth = 1280.0;
 
@@ -1150,6 +1195,29 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
     }
   }
 
+  /// Back on the first tab: confirm, then leave.
+  ///
+  /// The gesture is easy to trigger by accident on a phone and the app has no
+  /// server-side draft, so an unlucky swipe used to discard whatever the user
+  /// was in the middle of.
+  void _handleExitRequest() {
+    final now = DateTime.now();
+    final last = _lastExitRequestAt;
+    if (last != null && now.difference(last) <= _exitConfirmationWindow) {
+      SystemNavigator.pop();
+      return;
+    }
+    _lastExitRequestAt = now;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: const Text('もう一度押すと終了します'),
+          duration: _exitConfirmationWindow,
+        ),
+      );
+  }
+
   Widget _buildCurrentTab(ReachTrailController controller) {
     return IndexedStack(
       index: _index,
@@ -1183,14 +1251,19 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
         final content = _buildCurrentTab(controller);
 
         return PopScope(
-          // Back from a secondary tab returns to the first tab; only the first
-          // tab lets the gesture leave the app.
-          canPop: _index == 0,
+          // Back from a secondary tab returns to the first tab. On the first
+          // tab it takes two presses to leave, so a stray gesture cannot throw
+          // away an in-progress session.
+          canPop: false,
           onPopInvokedWithResult: (didPop, _) {
-            if (didPop || _index == 0) {
+            if (didPop) {
               return;
             }
-            setState(() => _index = 0);
+            if (_index != 0) {
+              setState(() => _index = 0);
+              return;
+            }
+            _handleExitRequest();
           },
           child: Scaffold(
             appBar: AppBar(
@@ -1205,21 +1278,6 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                     icon: Icon(
                       Icons.warning_amber_rounded,
                       color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                if (widget.authService.currentUser case final user?)
-                  Flexible(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: Center(
-                        child: Text(
-                          user.displayName?.isNotEmpty == true
-                              ? user.displayName!
-                              : user.email,
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                        ),
-                      ),
                     ),
                   ),
                 // Which search backend is wired up is a developer detail; it only
@@ -1250,6 +1308,8 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                   ),
                 AccountMenuButton(
                   photoUrl: widget.authService.currentUser?.photoUrl,
+                  displayName: widget.authService.currentUser?.displayName,
+                  email: widget.authService.currentUser?.email,
                   enabled: !_isDeletingAccount,
                   onSignOut: _confirmSignOut,
                   onSwitchAccount: _confirmSwitchAccount,
@@ -1272,22 +1332,22 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                             NavigationRailDestination(
                               icon: Icon(Icons.place_outlined),
                               selectedIcon: Icon(Icons.place),
-                              label: Text('Base'),
+                              label: Text('基準'),
                             ),
                             NavigationRailDestination(
                               icon: Icon(Icons.add_location_alt_outlined),
                               selectedIcon: Icon(Icons.add_location_alt),
-                              label: Text('Register'),
+                              label: Text('登録'),
                             ),
                             NavigationRailDestination(
                               icon: Icon(Icons.map_outlined),
                               selectedIcon: Icon(Icons.map),
-                              label: Text('Map'),
+                              label: Text('地図'),
                             ),
                             NavigationRailDestination(
                               icon: Icon(Icons.emoji_events_outlined),
                               selectedIcon: Icon(Icons.emoji_events),
-                              label: Text('Records'),
+                              label: Text('記録'),
                             ),
                           ],
                         ),
@@ -1316,22 +1376,22 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                       NavigationDestination(
                         icon: Icon(Icons.place_outlined),
                         selectedIcon: Icon(Icons.place),
-                        label: 'Base',
+                        label: '基準',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.add_location_alt_outlined),
                         selectedIcon: Icon(Icons.add_location_alt),
-                        label: 'Register',
+                        label: '登録',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.map_outlined),
                         selectedIcon: Icon(Icons.map),
-                        label: 'Map',
+                        label: '地図',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.emoji_events_outlined),
                         selectedIcon: Icon(Icons.emoji_events),
-                        label: 'Records',
+                        label: '記録',
                       ),
                     ],
                   ),
@@ -1402,17 +1462,27 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _elevatorRideCountController;
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
+  final _addressFieldKey = GlobalKey();
   Place? _selectedCandidate;
   double? _selectedLat;
   double? _selectedLng;
   bool _hasElevator = true;
+
+  /// True when the coordinates come from a map tap taken *after* a candidate
+  /// had been picked, so the saved point no longer matches the name and
+  /// address on screen. The form says so rather than saving a quiet mismatch.
+  bool _pointOverridesCandidate = false;
+
+  /// The name a fresh form starts with; also what "手入力で使う" is allowed to
+  /// overwrite, since it is nobody's deliberate choice.
+  static const String _defaultBaseName = '拠点';
 
   @override
   void initState() {
     super.initState();
     final base = widget.controller.baseLocation;
     _searchController = TextEditingController();
-    _nameController = TextEditingController(text: base?.name ?? 'Office');
+    _nameController = TextEditingController(text: base?.name ?? _defaultBaseName);
     _addressController = TextEditingController(text: base?.memo ?? '');
     _floorController = TextEditingController(text: base?.floorLabel ?? '');
     _entryFloorController = TextEditingController(
@@ -1443,11 +1513,12 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final base = controller.baseLocation;
+    final divergedFromCandidate = _pointOverridesCandidate;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         _SectionCard(
-          title: 'Base Location',
+          title: '基準地点',
           subtitle: base == null
               ? 'Yahoo検索ベースで基準地点候補を探し、選んだ地点を拠点として保存します。'
               : '現在の基準地点を修正して保存できます。削除すると、この基準地点に紐づく登録地と記録も削除されます。',
@@ -1482,7 +1553,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       label: const Text('基準地点を検索'),
                     ),
                     OutlinedButton.icon(
-                      onPressed: _useTypedAddressAsBase,
+                      onPressed: () => unawaited(_useTypedAddressAsBase()),
                       icon: const Icon(Icons.edit_location_alt_outlined),
                       label: const Text('住所を手入力で使う'),
                     ),
@@ -1517,6 +1588,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       (value == null || value.trim().isEmpty) ? '必須です' : null,
                 ),
                 TextFormField(
+                  key: _addressFieldKey,
                   controller: _addressController,
                   decoration: const InputDecoration(
                     labelText: '住所 / 場所メモ',
@@ -1569,8 +1641,17 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                 if (_selectedLat != null && _selectedLng != null)
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: Text(
-                      '選択座標: ${_selectedLat!.toStringAsFixed(6)}, ${_selectedLng!.toStringAsFixed(6)}',
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          '選択座標: ${_selectedLat!.toStringAsFixed(6)}, ${_selectedLng!.toStringAsFixed(6)}',
+                        ),
+                        if (_pointOverridesCandidate)
+                          const _Tag(label: '地図で指定した位置（候補とは別）'),
+                      ],
                     ),
                   ),
                 Align(
@@ -1579,12 +1660,6 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     spacing: 12,
                     runSpacing: 12,
                     children: [
-                      if (base != null)
-                        OutlinedButton.icon(
-                          onPressed: _deleteBaseLocation,
-                          icon: const Icon(Icons.delete_outline),
-                          label: const Text('基準地点と関連登録地を削除'),
-                        ),
                       FilledButton(
                         onPressed: () async {
                           if (!_formKey.currentState!.validate()) {
@@ -1631,8 +1706,22 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                           if (!context.mounted) {
                             return;
                           }
+                          // The query and its candidate list describe a search
+                          // that is over; leaving them up invites a second,
+                          // accidental save of a stale candidate.
+                          setState(() {
+                            _searchController.clear();
+                            _pointOverridesCandidate = false;
+                          });
+                          controller.clearBaseSearchResults();
                           messenger.showSnackBar(
-                            const SnackBar(content: Text('基準地点を保存しました。')),
+                            SnackBar(
+                              content: Text(
+                                divergedFromCandidate
+                                    ? '基準地点を保存しました（地図で指定した位置を使用しています）。'
+                                    : '基準地点を保存しました。',
+                              ),
+                            ),
                           );
                         },
                         child: Text(base == null ? '保存' : '修正を保存'),
@@ -1640,13 +1729,29 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     ],
                   ),
                 ),
+                // Irreversible, so it sits alone at the very end of the
+                // section rather than beside the button the user came for.
+                if (base != null) ...[
+                  const Divider(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _deleteBaseLocation,
+                      icon: const Icon(Icons.delete_outline),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Theme.of(context).colorScheme.error,
+                      ),
+                      label: const Text('基準地点と関連登録地を削除'),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
         ),
         const SizedBox(height: 16),
         _SectionCard(
-          title: 'Current Base',
+          title: '現在の基準地点',
           subtitle: '基準地点の設定内容を確認し、評価に使う出入口フロアや移動条件を見直せます。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1745,6 +1850,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   void _selectBaseCandidate(Place place) {
     setState(() {
       _selectedCandidate = place;
+      _pointOverridesCandidate = false;
       _selectedLat = place.lat;
       _selectedLng = place.lng;
       _nameController.text = place.buildingName.isNotEmpty
@@ -1759,11 +1865,15 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
 
   /// Copies the typed search text into the base-location form.
   ///
-  /// The address is always replaced (that is what the button promises); the
-  /// name is only filled when it is still empty or the default. Coordinates
-  /// are never guessed from free text, so the user is told to tap the map
-  /// unless a point has already been selected.
-  void _useTypedAddressAsBase() {
+  /// The address field is often off-screen when the button is pressed, so an
+  /// address the user had already written used to vanish without a trace.
+  /// A non-empty, different address is now confirmed first, and the field is
+  /// scrolled into view afterwards so the result is visible.
+  ///
+  /// The name is only filled when it is still empty or the default.
+  /// Coordinates are never guessed from free text, so the user is told to tap
+  /// the map unless a point has already been selected.
+  Future<void> _useTypedAddressAsBase() async {
     final query = _searchController.text.trim();
     final messenger = ScaffoldMessenger.of(context);
     if (query.isEmpty) {
@@ -1772,9 +1882,32 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
       );
       return;
     }
+    final existing = _addressController.text.trim();
+    if (existing.isNotEmpty && existing != query) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('住所欄を置き換えますか？'),
+          content: Text('住所欄を「$query」で置き換えますか？\n\n現在の内容:\n$existing'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('置き換える'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) {
+        return;
+      }
+    }
     setState(() {
       if (_nameController.text.trim().isEmpty ||
-          _nameController.text == 'Office') {
+          _nameController.text == _defaultBaseName) {
         _nameController.text = query;
       }
       _addressController.text = query;
@@ -1789,10 +1922,29 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
         ),
       ),
     );
+    // After the frame that applied the text, so the field is laid out.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final fieldContext = _addressFieldKey.currentContext;
+      if (fieldContext == null) {
+        return;
+      }
+      unawaited(
+        Scrollable.ensureVisible(
+          fieldContext,
+          duration: const Duration(milliseconds: 250),
+          alignment: 0.2,
+        ),
+      );
+    });
   }
 
+  /// A map tap wins over the candidate's coordinates but leaves its name and
+  /// address in the form, so the two can disagree. Rather than silently saving
+  /// the mismatch the form flags it, here and in the save confirmation.
   void _selectBasePoint(latlong.LatLng point) {
     setState(() {
+      _pointOverridesCandidate =
+          _selectedCandidate != null || _pointOverridesCandidate;
       _selectedCandidate = null;
       _selectedLat = point.latitude;
       _selectedLng = point.longitude;
@@ -1842,7 +1994,32 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
         ],
       ),
     );
-    if (confirmed != true) {
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    // Second gate: the first dialog is easy to dismiss with a stray tap, and
+    // this one takes the user's records with it.
+    final reconfirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('本当に削除しますか'),
+        content: const Text('基準地点と、それに紐づく登録地・記録を完全に削除します。元に戻せません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('削除する'),
+          ),
+        ],
+      ),
+    );
+    if (reconfirmed != true) {
       return;
     }
     final int deletedCount;
@@ -1859,9 +2036,10 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     }
     setState(() {
       _selectedCandidate = null;
+      _pointOverridesCandidate = false;
       _selectedLat = null;
       _selectedLng = null;
-      _nameController.text = 'Office';
+      _nameController.text = _defaultBaseName;
       _addressController.clear();
       _floorController.clear();
       _entryFloorController.clear();
@@ -1946,40 +2124,76 @@ class _BaseCandidateTile extends StatelessWidget {
   }
 }
 
+/// Tap-to-pick map, shared by the Base tab and the record sheet.
+///
+/// Dragging is deliberately off: the map lives inside a scrolling form, and a
+/// pan gesture that starts on it used to swallow the page's vertical scroll.
+/// Pinch and double-tap still zoom, and the tap that picks a point still lands.
 class _BaseLocationPickerMap extends StatelessWidget {
   const _BaseLocationPickerMap({
     required this.lat,
     required this.lng,
     required this.onSelected,
+    this.title = '地図で基準地点を選択',
+    this.description = '住所候補がうまく出ない場合は、地図をタップして緯度経度を設定できます。',
+    this.markerLabel = '基準地点',
+    this.reloadLabel = '基準地点に戻す',
+    this.fallbackCenter,
+    this.height = 260,
   });
 
   final double? lat;
   final double? lng;
   final ValueChanged<latlong.LatLng> onSelected;
+  final String title;
+  final String description;
+  final String markerLabel;
+  final String reloadLabel;
+
+  /// Where to open when nothing has been picked yet — the record sheet passes
+  /// the base location so the user starts on their own neighbourhood.
+  final latlong.LatLng? fallbackCenter;
+  final double height;
+
+  /// Lets a widget test drive the picker without synthesising a map gesture.
+  @visibleForTesting
+  static const Key mapKey = Key('location-picker-map');
 
   @override
   Widget build(BuildContext context) {
     final selectedPoint = lat == null || lng == null
         ? null
         : latlong.LatLng(lat!, lng!);
-    final center = selectedPoint ?? const latlong.LatLng(35.681236, 139.767125);
+    final center =
+        selectedPoint ??
+        fallbackCenter ??
+        const latlong.LatLng(35.681236, 139.767125);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 8,
       children: [
-        Text('地図で基準地点を選択', style: Theme.of(context).textTheme.titleSmall),
-        const Text('住所候補がうまく出ない場合は、地図をタップして緯度経度を設定できます。'),
+        Text(title, style: Theme.of(context).textTheme.titleSmall),
+        Text(description),
         SizedBox(
-          height: 260,
+          height: height,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
             child: _MapReloadable(
+              reloadLabel: reloadLabel,
               builder: (context) => FlutterMap(
+                key: mapKey,
                 options: MapOptions(
                   initialCenter: center,
-                  initialZoom: selectedPoint == null ? 12 : 16,
+                  initialZoom: selectedPoint == null
+                      ? (fallbackCenter == null ? 12 : 15.5)
+                      : 16,
                   onTap: (_, point) => onSelected(point),
+                  interactionOptions: const InteractionOptions(
+                    flags:
+                        InteractiveFlag.pinchZoom |
+                        InteractiveFlag.doubleTapZoom,
+                  ),
                 ),
                 children: [
                   TileLayer(
@@ -1994,9 +2208,9 @@ class _BaseLocationPickerMap extends StatelessWidget {
                           point: selectedPoint,
                           width: 120,
                           height: 56,
-                          child: const _MapMarker(
-                            label: 'Base',
-                            color: Color(0xFF1D4ED8),
+                          child: _MapMarker(
+                            label: markerLabel,
+                            color: const Color(0xFF1D4ED8),
                             isSelected: true,
                           ),
                         ),
@@ -3179,20 +3393,38 @@ class _OpenStreetMapAttribution extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Simple rather than rich: the rich widget hides the credit behind a badge
-    // the user has to tap, which does not count as visible attribution.
-    return const SimpleAttributionWidget(
-      alignment: Alignment.bottomLeft,
-      source: Text('OpenStreetMap contributors'),
+    // Hand-rolled rather than `SimpleAttributionWidget`: that one hardcodes a
+    // "flutter_map | " prefix which advertises the mapping package to the user
+    // and crowds out the credit that actually has to be visible. The rich
+    // variant is no better — it hides the credit behind a badge to tap.
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.bottomLeft,
+        child: ColoredBox(
+          color: Theme.of(context).colorScheme.surface,
+          child: const Padding(
+            padding: EdgeInsets.all(3),
+            child: Text('© OpenStreetMap contributors'),
+          ),
+        ),
+      ),
     );
   }
 }
 
 class _MapReloadable extends StatefulWidget {
-  const _MapReloadable({required this.builder, this.onReload});
+  const _MapReloadable({
+    required this.builder,
+    this.onReload,
+    this.reloadLabel = 'リロード',
+  });
 
   final WidgetBuilder builder;
   final VoidCallback? onReload;
+
+  /// What the button promises. "リロード" reads like a network retry, so a map
+  /// whose button really just recentres says so instead.
+  final String reloadLabel;
 
   @override
   State<_MapReloadable> createState() => _MapReloadableState();
@@ -3232,21 +3464,24 @@ class _MapReloadableState extends State<_MapReloadable> {
             clipBehavior: Clip.antiAlias,
             child: InkWell(
               onTap: _reload,
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 child: Tooltip(
-                  message: '地図をリロード',
+                  message: widget.reloadLabel,
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.refresh_rounded,
                         size: 18,
                         color: Colors.white,
                       ),
-                      SizedBox(width: 6),
+                      const SizedBox(width: 6),
                       Text(
-                        'リロード',
+                        widget.reloadLabel,
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 13,

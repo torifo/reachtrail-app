@@ -8,6 +8,8 @@ Future<void> _pumpMenu(
   WidgetTester tester, {
   required List<String> log,
   bool enabled = true,
+  String? displayName,
+  String? email,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -16,6 +18,8 @@ Future<void> _pumpMenu(
           actions: [
             AccountMenuButton(
               enabled: enabled,
+              displayName: displayName,
+              email: email,
               onSignOut: () => log.add('sign-out'),
               onSwitchAccount: () => log.add('switch'),
               onDeleteAccount: () => log.add('delete'),
@@ -83,6 +87,44 @@ void main() {
       expect(find.text('アカウントを切り替える'), findsNothing);
       expect(find.text('アカウントを削除'), findsNothing);
       expect(log, isEmpty);
+    });
+
+    testWidgets('names the signed-in account above the actions', (
+      tester,
+    ) async {
+      final log = <String>[];
+      await _pumpMenu(
+        tester,
+        log: log,
+        displayName: '芝二郎',
+        email: 'jiro@example.com',
+      );
+
+      await tester.tap(find.byTooltip('アカウント'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('芝二郎'), findsOneWidget);
+      expect(find.text('jiro@example.com'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('芝二郎')).dy,
+        lessThan(tester.getTopLeft(find.text('サインアウト')).dy),
+      );
+
+      // The header names the account; it is not a fourth thing to pick.
+      await tester.tap(find.text('芝二郎'));
+      await tester.pumpAndSettle();
+      expect(log, isEmpty);
+      expect(find.text('サインアウト'), findsOneWidget);
+    });
+
+    testWidgets('shows no header when nobody is named', (tester) async {
+      final log = <String>[];
+      await _pumpMenu(tester, log: log);
+
+      await tester.tap(find.byTooltip('アカウント'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PopupMenuDivider), findsOneWidget);
     });
   });
 
