@@ -16,6 +16,7 @@ class Place {
     this.elevatorRideCount,
     this.category = '',
     this.rawPayload = '',
+    this.isPlaceholder = false,
   });
 
   final String id;
@@ -34,6 +35,12 @@ class Place {
   final int? elevatorRideCount;
   final String category;
   final String rawPayload;
+
+  /// True for a stand-in built from a snapshot that has no usable coordinates.
+  ///
+  /// Never serialised: such a place exists only so the record list stays
+  /// readable, and it must never be written back as if it were real data.
+  final bool isPlaceholder;
 
   Place copyWith({
     String? id,
@@ -103,14 +110,25 @@ class Place {
 
   /// Tolerant decoder: never hard-casts, so data written by an older build
   /// cannot crash the app while loading saved places.
+  ///
+  /// Coordinates are the one exception. A place without them cannot be placed
+  /// on a map or measured against the base location, and silently substituting
+  /// `0, 0` puts every such record in the Gulf of Guinea, thousands of
+  /// kilometres away, which corrupts distances and scores. Such an entry is
+  /// rejected so the caller can skip it.
   factory Place.fromJson(Map<String, dynamic> json) {
+    final lat = _asOptionalDouble(json['lat']);
+    final lng = _asOptionalDouble(json['lng']);
+    if (lat == null || lng == null) {
+      throw const FormatException('Place requires numeric lat and lng values.');
+    }
     return Place(
       id: _asString(json['id']),
       provider: _asString(json['provider']),
       providerPlaceId: _asString(json['providerPlaceId']),
       name: _asString(json['name']),
-      lat: _asDouble(json['lat'], 0),
-      lng: _asDouble(json['lng'], 0),
+      lat: lat,
+      lng: lng,
       address: _asString(json['address']),
       buildingName: _asString(json['buildingName']),
       floorLabel: _asString(json['floorLabel']),
@@ -122,6 +140,16 @@ class Place {
       category: _asString(json['category']),
       rawPayload: _asString(json['rawPayload']),
     );
+  }
+
+  /// [fromJson] without the throw, for the display paths that would rather skip
+  /// an unreadable snapshot than take down the whole list.
+  static Place? tryFromJson(Map<String, dynamic> json) {
+    try {
+      return Place.fromJson(json);
+    } on FormatException {
+      return null;
+    }
   }
 }
 
@@ -144,14 +172,14 @@ int? _asInt(Object? value) {
   return null;
 }
 
-double _asDouble(Object? value, double fallback) {
+double? _asOptionalDouble(Object? value) {
   if (value is num) {
     return value.toDouble();
   }
   if (value is String) {
-    return double.tryParse(value) ?? fallback;
+    return double.tryParse(value);
   }
-  return fallback;
+  return null;
 }
 
 bool _asBool(Object? value, bool fallback) {

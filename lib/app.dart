@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/foundation.dart' show Listenable, kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show FilteringTextInputFormatter;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
@@ -28,6 +30,15 @@ part 'widgets/sign_in_screen.dart';
 const String saveFailureMessage = '保存に失敗しました。もう一度お試しください。';
 const String deleteFailureMessage = '削除に失敗しました。もう一度お試しください。';
 
+/// Shown when the local store could not be read at startup.
+const String bootstrapFailureMessage = '保存データの読み込みに失敗しました。再試行してください。';
+
+/// Shown when a search is requested before the search service could be built.
+const String searchUnavailableMessage = '検索を初期化できませんでした。アプリを再起動してください。';
+
+/// The package id used as the OpenStreetMap tile-server user agent.
+const String tileUserAgentPackageName = 'net.riumu.reachtrail';
+
 class ReachTrailApp extends StatefulWidget {
   const ReachTrailApp({super.key});
 
@@ -35,9 +46,145 @@ class ReachTrailApp extends StatefulWidget {
   State<ReachTrailApp> createState() => _ReachTrailAppState();
 }
 
+/// Remembers which account the local store has already been bound to.
+///
+/// Signing out (or deleting the account) clears the memory, so signing back in
+/// re-registers the id; without that, the next *different* account would find
+/// no owner recorded and would inherit the previous user's records.
+class SignedInUserTracker {
+  String? _handledUserId;
+
+  /// Returns the id whose local data must be adopted, or null when there is
+  /// nothing to do.
+  String? nextUserToAdopt(String? userId) {
+    if (userId == null || userId.isEmpty) {
+      _handledUserId = null;
+      return null;
+    }
+    if (userId == _handledUserId) {
+      return null;
+    }
+    _handledUserId = userId;
+    return userId;
+  }
+}
+
+/// What the account menu can do; kept public so tests can name the entries.
+enum AccountMenuAction { signOut, switchAccount, deleteAccount }
+
+/// Shows the confirmation that precedes a switch to another Google account.
+///
+/// Returns true when the user chose to go ahead.
+Future<bool?> showSwitchAccountConfirmation(BuildContext context) {
+  return showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('アカウントを切り替えますか？'),
+      content: const Text(
+        '別の Google アカウントでサインインします。'
+        '別のアカウントに切り替えた場合、この端末に保存されている基準地点・店舗・記録は'
+        '消去されます（同じアカウントを選び直した場合は残ります）。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('切り替える'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// The single account entry point in the app bar.
+///
+/// Sign-out, switching accounts and deletion all act on the same thing, so
+/// they share one avatar-shaped menu instead of competing for toolbar space.
+class AccountMenuButton extends StatelessWidget {
+  const AccountMenuButton({
+    super.key,
+    required this.onSignOut,
+    required this.onSwitchAccount,
+    required this.onDeleteAccount,
+    this.photoUrl,
+    this.enabled = true,
+  });
+
+  final VoidCallback onSignOut;
+  final VoidCallback onSwitchAccount;
+  final VoidCallback onDeleteAccount;
+
+  /// The signed-in user's Google avatar, when there is one.
+  final String? photoUrl;
+
+  /// False while an account operation is already running.
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final photo = photoUrl;
+    return PopupMenuButton<AccountMenuAction>(
+      tooltip: 'アカウント',
+      enabled: enabled,
+      icon: photo != null && photo.isNotEmpty
+          ? CircleAvatar(
+              radius: 14,
+              backgroundImage: NetworkImage(photo),
+              // A broken avatar must not take the menu down with it.
+              onBackgroundImageError: (_, _) {},
+            )
+          : const Icon(Icons.account_circle),
+      onSelected: (action) {
+        switch (action) {
+          case AccountMenuAction.signOut:
+            onSignOut();
+          case AccountMenuAction.switchAccount:
+            onSwitchAccount();
+          case AccountMenuAction.deleteAccount:
+            onDeleteAccount();
+        }
+      },
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: AccountMenuAction.signOut,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.logout),
+            title: Text('サインアウト'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: AccountMenuAction.switchAccount,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.switch_account_outlined),
+            title: Text('アカウントを切り替える'),
+          ),
+        ),
+        // Deletion is irreversible, so it is fenced off from the two
+        // recoverable actions above it.
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: AccountMenuAction.deleteAccount,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.person_remove_outlined, color: errorColor),
+            title: Text('アカウントを削除', style: TextStyle(color: errorColor)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _ReachTrailAppState extends State<ReachTrailApp> {
   late final ReachTrailController _controller;
   late final GoogleAuthService _authService;
+  final SignedInUserTracker _userTracker = SignedInUserTracker();
 
   @override
   void initState() {
@@ -48,12 +195,27 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
       persistence: PersistenceService(),
       configService: configService,
       sessionTokenProvider: () => _authService.currentUser?.sessionToken ?? '',
+      // A token the proxy has rejected is worthless: drop it so nothing retries
+      // with it, while the user's identity stays on screen for the prompt.
+      onSessionExpired: () => _authService.markSessionExpired(),
     )..load();
+    _authService.addListener(_handleAuthChanged);
     _authService.initialize();
+  }
+
+  /// Local data belongs to whoever was signed in when it was written, so a
+  /// sign-in by a different Google account must not inherit it.
+  void _handleAuthChanged() {
+    final userId = _userTracker.nextUserToAdopt(_authService.currentUser?.id);
+    if (userId == null) {
+      return;
+    }
+    unawaited(_controller.adoptUser(userId));
   }
 
   @override
   void dispose() {
+    _authService.removeListener(_handleAuthChanged);
     _authService.dispose();
     _controller.dispose();
     super.dispose();
@@ -119,7 +281,10 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
               ),
             ),
           ),
-          home: _authService.isInitializing
+          // A restored session opens straight on the home screen: waiting for
+          // initialization to finish would show a spinner over content that is
+          // already usable, and offline it would never clear.
+          home: _authService.isInitializing && !_authService.isSignedIn
               ? const Scaffold(body: Center(child: CircularProgressIndicator()))
               : !_authService.isSignedIn
               ? ReachTrailSignInScreen(authService: _authService)
@@ -131,6 +296,32 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
       },
     );
   }
+}
+
+/// Shown in place of a name the snapshot never had.
+const String placeholderPlaceName = '位置情報のない記録';
+
+/// Decodes a stored place snapshot for display.
+///
+/// A snapshot written before coordinates were required (or corrupted since)
+/// cannot be turned into a real [Place]; showing a clearly labelled placeholder
+/// keeps the record list usable instead of taking the whole screen down.
+Place placeFromSnapshot(Map<String, dynamic> snapshot) {
+  final place = Place.tryFromJson(snapshot);
+  if (place != null) {
+    return place;
+  }
+  final storedName = '${snapshot['name'] ?? ''}'.trim();
+  return Place(
+    id: '${snapshot['id'] ?? ''}',
+    provider: '${snapshot['provider'] ?? ''}',
+    providerPlaceId: '${snapshot['providerPlaceId'] ?? ''}',
+    name: storedName.isEmpty ? placeholderPlaceName : storedName,
+    lat: 0,
+    lng: 0,
+    address: '${snapshot['address'] ?? ''}',
+    isPlaceholder: true,
+  );
 }
 
 final _idRandom = math.Random();
@@ -150,16 +341,24 @@ class ReachTrailController extends ChangeNotifier {
     required PersistenceService persistence,
     required LocalConfigService configService,
     String Function()? sessionTokenProvider,
+    VoidCallback? onSessionExpired,
   }) : _persistence = persistence,
        _configService = configService,
-       _sessionTokenProvider = sessionTokenProvider;
+       _sessionTokenProvider = sessionTokenProvider,
+       _onSessionExpired = onSessionExpired;
 
   final PersistenceService _persistence;
   final LocalConfigService _configService;
   final String Function()? _sessionTokenProvider;
+  final VoidCallback? _onSessionExpired;
   PlaceSearchService? _searchService;
 
   bool isBootstrapping = true;
+  String? bootstrapErrorMessage;
+
+  /// True after the search proxy rejected the session token, so the UI can
+  /// offer a re-sign-in instead of a dead end.
+  bool sessionExpired = false;
   bool isSearching = false;
   bool isBaseSearching = false;
   bool isBuildingSearching = false;
@@ -184,23 +383,76 @@ class ReachTrailController extends ChangeNotifier {
   List<Place> buildingSearchResults = const [];
   RecordSort recordSort = RecordSort.latest;
 
-  Future<void> load() async {
+  /// The most recent [load], so [adoptUser] can wait for a read that is still
+  /// in flight instead of racing it.
+  Future<void>? _loadFuture;
+
+  Future<void> load() {
+    final future = _load();
+    _loadFuture = future;
+    return future;
+  }
+
+  Future<void> _load() async {
     isBootstrapping = true;
+    bootstrapErrorMessage = null;
     notifyListeners();
     try {
-      final config = await _configService.load();
-      _applyConfig(config);
-    } on LocalConfigException catch (error) {
-      // A misbuilt release: keep the app usable but say so rather than
-      // pretending mock search is the intended configuration.
-      _applyConfig(_fallbackConfig);
-      configErrorMessage = error.message;
+      try {
+        _applyConfig(await _configService.load());
+      } on LocalConfigException catch (error) {
+        // A misbuilt release: keep the app usable but say so rather than
+        // pretending mock search is the intended configuration.
+        _applyConfig(_fallbackConfig);
+        configErrorMessage = error.message;
+      } catch (_) {
+        _applyConfig(_fallbackConfig);
+        configErrorMessage = '設定の読み込みに失敗しました。店舗検索は利用できません。';
+      }
+      baseLocation = await _persistence.loadBaseLocation();
+      places = await _persistence.loadPlaces();
+      records = await _persistence.loadRecords();
+    } catch (_) {
+      // Without this the app would hang forever on the startup spinner with no
+      // way for the user to retry.
+      bootstrapErrorMessage = bootstrapFailureMessage;
+    } finally {
+      isBootstrapping = false;
+      notifyListeners();
     }
-    baseLocation = await _persistence.loadBaseLocation();
-    places = await _persistence.loadPlaces();
-    records = await _persistence.loadRecords();
-    isBootstrapping = false;
-    notifyListeners();
+  }
+
+  /// Binds the local store to [userId], wiping it first when it belongs to a
+  /// different account.
+  ///
+  /// Signing out deliberately keeps the data, so the same person keeps their
+  /// records after a re-login; the wipe happens only when a *different* user
+  /// signs in on the same device.
+  Future<void> adoptUser(String userId) async {
+    if (userId.isEmpty) {
+      return;
+    }
+    // A sign-in can land while the startup read is still in flight; without
+    // this the read would finish after the wipe and hand the new user the
+    // previous account's records.
+    try {
+      await _loadFuture;
+    } catch (_) {
+      // A failed load is already reported through `bootstrapErrorMessage`.
+    }
+    try {
+      final previousUserId = await _persistence.loadLastUserId();
+      final isDifferentUser = previousUserId != null && previousUserId != userId;
+      if (isDifferentUser) {
+        await clearLocalData();
+      }
+      await _persistence.saveLastUserId(userId);
+      if (isDifferentUser) {
+        await load();
+      }
+    } catch (_) {
+      // Never block sign-in on a bookkeeping write.
+    }
   }
 
   /// Wipes every locally stored record, place and base location.
@@ -347,16 +599,16 @@ class ReachTrailController extends ChangeNotifier {
     buildingSearchResults = const [];
     notifyListeners();
     try {
-      searchResults = await _searchService!.search(
+      // The empty-result case is covered by the candidate panel's own guidance,
+      // so it is not repeated here as a red error.
+      searchResults = await _requireSearchService().search(
         query: query,
         baseLocation: baseLocation,
         nearbyOnly: nearbyOnly,
       );
-      if (searchResults.isEmpty) {
-        errorMessage = '候補が見つかりません。手入力で登録できます。';
-      }
     } catch (error) {
       errorMessage = describeSearchFailure(error);
+      _noteSearchFailure(error);
       searchResults = const [];
     } finally {
       isSearching = false;
@@ -369,7 +621,7 @@ class ReachTrailController extends ChangeNotifier {
     buildingSearchError = null;
     notifyListeners();
     try {
-      buildingSearchResults = await _searchService!.search(
+      buildingSearchResults = await _requireSearchService().search(
         query: query,
         baseLocation: null,
         nearbyOnly: false,
@@ -380,6 +632,7 @@ class ReachTrailController extends ChangeNotifier {
       }
     } catch (error) {
       buildingSearchError = describeSearchFailure(error);
+      _noteSearchFailure(error);
       buildingSearchResults = const [];
     } finally {
       isBuildingSearching = false;
@@ -392,7 +645,7 @@ class ReachTrailController extends ChangeNotifier {
     baseSearchError = null;
     notifyListeners();
     try {
-      baseSearchResults = await _searchService!.search(
+      baseSearchResults = await _requireSearchService().search(
         query: query,
         baseLocation: null,
         nearbyOnly: false,
@@ -403,11 +656,50 @@ class ReachTrailController extends ChangeNotifier {
       }
     } catch (error) {
       baseSearchError = describeSearchFailure(error);
+      _noteSearchFailure(error);
       baseSearchResults = const [];
     } finally {
       isBaseSearching = false;
       notifyListeners();
     }
+  }
+
+  /// A null search service means config never loaded; a friendly message beats
+  /// a null-dereference crash.
+  PlaceSearchService _requireSearchService() {
+    final service = _searchService;
+    if (service == null) {
+      throw const PlaceSearchConfigurationException(searchUnavailableMessage);
+    }
+    return service;
+  }
+
+  void _noteSearchFailure(Object error) {
+    if (error is! SessionExpiredException || sessionExpired) {
+      return;
+    }
+    sessionExpired = true;
+    _onSessionExpired?.call();
+  }
+
+  void clearSessionExpired() {
+    if (!sessionExpired) {
+      return;
+    }
+    sessionExpired = false;
+    notifyListeners();
+  }
+
+  /// How many stored records would have their distance and score recomputed if
+  /// the current base location moved.
+  int get recordsBoundToBaseLocation {
+    final currentBase = baseLocation;
+    if (currentBase == null) {
+      return 0;
+    }
+    return records
+        .where((record) => record.baseLocationId == currentBase.id)
+        .length;
   }
 
   Future<void> saveRecord({
@@ -562,7 +854,12 @@ class ReachTrailController extends ChangeNotifier {
     DineChallengeRecord record,
     BaseLocation currentBase,
   ) {
-    final place = Place.fromJson(record.placeSnapshot);
+    final place = Place.tryFromJson(record.placeSnapshot);
+    if (place == null) {
+      // No usable coordinates: leave the stored numbers as they are rather
+      // than recomputing from a bogus point.
+      return record;
+    }
     final straightLineDistance = calculateDistanceMeters(
       startLat: currentBase.lat,
       startLng: currentBase.lng,
@@ -665,7 +962,7 @@ class ReachTrailController extends ChangeNotifier {
     final names = <String, String>{};
     for (final record in records) {
       counts[record.placeId] = (counts[record.placeId] ?? 0) + 1;
-      names[record.placeId] ??= Place.fromJson(record.placeSnapshot).name;
+      names[record.placeId] ??= placeFromSnapshot(record.placeSnapshot).name;
     }
     final topId = counts.entries
         .reduce((a, b) => a.value >= b.value ? a : b)
@@ -701,12 +998,92 @@ class ReachTrailHome extends StatefulWidget {
   State<ReachTrailHome> createState() => _ReachTrailHomeState();
 }
 
-class _ReachTrailHomeState extends State<ReachTrailHome> {
+class _ReachTrailHomeState extends State<ReachTrailHome>
+    with WidgetsBindingObserver {
   int _index = 0;
   bool _isDeletingAccount = false;
 
   static const _desktopBreakpoint = 1080.0;
   static const _contentMaxWidth = 1280.0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      return;
+    }
+    // A session token can expire while the app sits in the background; refresh
+    // it quietly so the next search does not fail. Failure stays invisible.
+    unawaited(widget.authService.refreshSilently());
+  }
+
+  Future<void> _confirmSignOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('サインアウトしますか？'),
+        content: const Text(
+          'この端末に保存された基準地点・登録した店舗・記録はそのまま残ります。'
+          '同じ Google アカウントで再度サインインすると、続きから利用できます。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('サインアウト'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    await widget.authService.signOut();
+  }
+
+  /// Signs out and immediately reopens Google's account chooser.
+  ///
+  /// Nothing local is wiped here: [SignedInUserTracker] and
+  /// [ReachTrailController.adoptUser] already clear the store when the id that
+  /// signs back in differs, and keep it when the same account returns.
+  Future<void> _confirmSwitchAccount() async {
+    final confirmed = await showSwitchAccountConfirmation(context);
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    // Revoking the grant is what makes the chooser appear; without it Google
+    // hands back the account the user is trying to leave.
+    await widget.authService.signOut(forgetAccount: true);
+    if (!mounted) {
+      return;
+    }
+    // A cancelled sign-in simply leaves the app on the sign-in screen.
+    await widget.authService.signIn();
+  }
+
+  bool get _needsReauthentication =>
+      widget.controller.sessionExpired || widget.authService.sessionExpired;
+
+  /// Re-runs the sign-in flow after the proxy rejected the session token.
+  Future<void> _reauthenticate() async {
+    widget.controller.clearSessionExpired();
+    widget.authService.clearSessionExpired();
+    await widget.authService.signIn();
+  }
 
   /// Google Play requires an in-app route to delete the account, so this
   /// confirms, removes the server-side account, wipes local data, then signs
@@ -769,7 +1146,12 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
       index: _index,
       children: [
         _BaseLocationTab(controller: controller),
-        _RegisterTab(controller: controller),
+        _RegisterTab(
+          controller: controller,
+          searchUnavailableReason: widget.authService.searchUnavailableReason,
+          sessionExpired: widget.authService.sessionExpired,
+          onReauthenticate: _reauthenticate,
+        ),
         _MapTab(controller: controller),
         _RecordsTab(controller: controller),
       ],
@@ -782,141 +1164,213 @@ class _ReachTrailHomeState extends State<ReachTrailHome> {
     if (controller.isBootstrapping) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    if (controller.bootstrapErrorMessage case final message?) {
+      return _BootstrapErrorScreen(message: message, onRetry: controller.load);
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final isDesktop = constraints.maxWidth >= _desktopBreakpoint;
         final content = _buildCurrentTab(controller);
 
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('ReachTrail'),
-            actions: [
-              if (widget.authService.currentUser case final user?)
-                Flexible(
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Center(
-                      child: Text(
-                        user.displayName?.isNotEmpty == true
-                            ? user.displayName!
-                            : user.email,
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
-                      ),
+        return PopScope(
+          // Back from a secondary tab returns to the first tab; only the first
+          // tab lets the gesture leave the app.
+          canPop: _index == 0,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop || _index == 0) {
+              return;
+            }
+            setState(() => _index = 0);
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              title: const Text('ReachTrail'),
+              actions: [
+                // An expired session is not confined to the Register tab: the
+                // way back in has to be reachable from wherever the user is.
+                if (_needsReauthentication)
+                  IconButton(
+                    tooltip: '再サインインが必要です',
+                    onPressed: _reauthenticate,
+                    icon: Icon(
+                      Icons.warning_amber_rounded,
+                      color: Theme.of(context).colorScheme.error,
                     ),
                   ),
-                ),
-              Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: Center(
-                  child: Text(
-                    controller.isYahooSearchEnabled ? 'Yahoo' : 'Mock Search',
-                  ),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Sign out',
-                onPressed: _isDeletingAccount
-                    ? null
-                    : widget.authService.signOut,
-                icon: const Icon(Icons.logout),
-              ),
-              IconButton(
-                tooltip: 'アカウント削除',
-                onPressed: _isDeletingAccount
-                    ? null
-                    : () => _confirmDeleteAccount(context),
-                icon: _isDeletingAccount
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.person_remove_outlined),
-              ),
-            ],
-          ),
-          body: isDesktop
-              ? Row(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 0, 12),
-                      child: NavigationRail(
-                        selectedIndex: _index,
-                        onDestinationSelected: (value) =>
-                            setState(() => _index = value),
-                        labelType: NavigationRailLabelType.all,
-                        groupAlignment: -0.8,
-                        destinations: const [
-                          NavigationRailDestination(
-                            icon: Icon(Icons.place_outlined),
-                            selectedIcon: Icon(Icons.place),
-                            label: Text('Base'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.add_location_alt_outlined),
-                            selectedIcon: Icon(Icons.add_location_alt),
-                            label: Text('Register'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.map_outlined),
-                            selectedIcon: Icon(Icons.map),
-                            label: Text('Map'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.emoji_events_outlined),
-                            selectedIcon: Icon(Icons.emoji_events),
-                            label: Text('Records'),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const VerticalDivider(width: 1),
-                    Expanded(
+                if (widget.authService.currentUser case final user?)
+                  Flexible(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 8),
                       child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(
-                            maxWidth: _contentMaxWidth,
-                          ),
-                          child: content,
+                        child: Text(
+                          user.displayName?.isNotEmpty == true
+                              ? user.displayName!
+                              : user.email,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
                         ),
                       ),
                     ),
-                  ],
-                )
-              : content,
-          bottomNavigationBar: isDesktop
-              ? null
-              : NavigationBar(
-                  selectedIndex: _index,
-                  onDestinationSelected: (value) =>
-                      setState(() => _index = value),
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.place_outlined),
-                      selectedIcon: Icon(Icons.place),
-                      label: 'Base',
+                  ),
+                // Which search backend is wired up is a developer detail; it only
+                // confuses a tester on a release build.
+                if (kDebugMode)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 12),
+                    child: Center(
+                      child: Text(
+                        controller.isYahooSearchEnabled
+                            ? 'Yahoo'
+                            : 'Mock Search',
+                      ),
                     ),
-                    NavigationDestination(
-                      icon: Icon(Icons.add_location_alt_outlined),
-                      selectedIcon: Icon(Icons.add_location_alt),
-                      label: 'Register',
+                  ),
+                // Everything that acts on the account sits in one place, so
+                // the user does not have to guess which icon owns which verb.
+                if (_isDeletingAccount)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
                     ),
-                    NavigationDestination(
-                      icon: Icon(Icons.map_outlined),
-                      selectedIcon: Icon(Icons.map),
-                      label: 'Map',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.emoji_events_outlined),
-                      selectedIcon: Icon(Icons.emoji_events),
-                      label: 'Records',
-                    ),
-                  ],
+                  ),
+                AccountMenuButton(
+                  photoUrl: widget.authService.currentUser?.photoUrl,
+                  enabled: !_isDeletingAccount,
+                  onSignOut: _confirmSignOut,
+                  onSwitchAccount: _confirmSwitchAccount,
+                  onDeleteAccount: () => _confirmDeleteAccount(context),
                 ),
+              ],
+            ),
+            body: isDesktop
+                ? Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 0, 12),
+                        child: NavigationRail(
+                          selectedIndex: _index,
+                          onDestinationSelected: (value) =>
+                              setState(() => _index = value),
+                          labelType: NavigationRailLabelType.all,
+                          groupAlignment: -0.8,
+                          destinations: const [
+                            NavigationRailDestination(
+                              icon: Icon(Icons.place_outlined),
+                              selectedIcon: Icon(Icons.place),
+                              label: Text('Base'),
+                            ),
+                            NavigationRailDestination(
+                              icon: Icon(Icons.add_location_alt_outlined),
+                              selectedIcon: Icon(Icons.add_location_alt),
+                              label: Text('Register'),
+                            ),
+                            NavigationRailDestination(
+                              icon: Icon(Icons.map_outlined),
+                              selectedIcon: Icon(Icons.map),
+                              label: Text('Map'),
+                            ),
+                            NavigationRailDestination(
+                              icon: Icon(Icons.emoji_events_outlined),
+                              selectedIcon: Icon(Icons.emoji_events),
+                              label: Text('Records'),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const VerticalDivider(width: 1),
+                      Expanded(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              maxWidth: _contentMaxWidth,
+                            ),
+                            child: content,
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : content,
+            bottomNavigationBar: isDesktop
+                ? null
+                : NavigationBar(
+                    selectedIndex: _index,
+                    onDestinationSelected: (value) =>
+                        setState(() => _index = value),
+                    destinations: const [
+                      NavigationDestination(
+                        icon: Icon(Icons.place_outlined),
+                        selectedIcon: Icon(Icons.place),
+                        label: 'Base',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.add_location_alt_outlined),
+                        selectedIcon: Icon(Icons.add_location_alt),
+                        label: 'Register',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.map_outlined),
+                        selectedIcon: Icon(Icons.map),
+                        label: 'Map',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.emoji_events_outlined),
+                        selectedIcon: Icon(Icons.emoji_events),
+                        label: 'Records',
+                      ),
+                    ],
+                  ),
+          ),
         );
       },
+    );
+  }
+}
+
+/// Startup failed before any data was available; the user needs a way back in
+/// that is not "force quit and hope".
+class _BootstrapErrorScreen extends StatelessWidget {
+  const _BootstrapErrorScreen({required this.message, required this.onRetry});
+
+  final String message;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('ReachTrail')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 48,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                const SizedBox(height: 16),
+                Text(message, textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: onRetry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('再試行'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1028,7 +1482,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                 if (controller.baseSearchError != null)
                   Text(
                     controller.baseSearchError!,
-                    style: const TextStyle(color: Colors.redAccent),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                 if (controller.baseSearchResults.isNotEmpty)
                   Align(
@@ -1134,6 +1590,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                             return;
                           }
                           final messenger = ScaffoldMessenger.of(context);
+                          if (!await _confirmRecalculation()) {
+                            return;
+                          }
                           try {
                             await controller.saveBaseLocation(
                               name: _nameController.text.trim(),
@@ -1230,6 +1689,34 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     );
   }
 
+  /// Moving the base location silently rewrites every distance and score that
+  /// hangs off it, so the user is told how many records that is first.
+  Future<bool> _confirmRecalculation() async {
+    final affected = widget.controller.recordsBoundToBaseLocation;
+    if (affected == 0) {
+      return true;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('記録を再計算しますか？'),
+        content: Text('この基準地点に紐づく $affected 件の記録の距離とスコアを再計算します。よろしいですか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.refresh),
+            label: const Text('再計算して保存'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
   Future<void> _runBaseSearch() async {
     // A second submit while a search is in flight would race the first.
     if (widget.controller.isBaseSearching ||
@@ -1261,17 +1748,38 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     });
   }
 
+  /// Copies the typed search text into the base-location form.
+  ///
+  /// The address is always replaced (that is what the button promises); the
+  /// name is only filled when it is still empty or the default. Coordinates
+  /// are never guessed from free text, so the user is told to tap the map
+  /// unless a point has already been selected.
   void _useTypedAddressAsBase() {
     final query = _searchController.text.trim();
+    final messenger = ScaffoldMessenger.of(context);
+    if (query.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('先に建物名や住所を入力してください。')),
+      );
+      return;
+    }
     setState(() {
       if (_nameController.text.trim().isEmpty ||
           _nameController.text == 'Office') {
-        _nameController.text = query.isEmpty ? 'Base' : query;
+        _nameController.text = query;
       }
-      if (_addressController.text.trim().isEmpty) {
-        _addressController.text = query;
-      }
+      _addressController.text = query;
     });
+    final needsPoint = _selectedLat == null || _selectedLng == null;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          needsPoint
+              ? '住所を反映しました。下の地図をタップして位置を指定してください。'
+              : '住所を反映しました。',
+        ),
+      ),
+    );
   }
 
   void _selectBasePoint(latlong.LatLng point) {
@@ -1468,7 +1976,7 @@ class _BaseLocationPickerMap extends StatelessWidget {
                   TileLayer(
                     urlTemplate:
                         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'reachtrail_app',
+                    userAgentPackageName: tileUserAgentPackageName,
                   ),
                   if (selectedPoint != null)
                     MarkerLayer(
@@ -1485,6 +1993,8 @@ class _BaseLocationPickerMap extends StatelessWidget {
                         ),
                       ],
                     ),
+                  // Last so no layer can be drawn over the attribution.
+                  const _OpenStreetMapAttribution(),
                 ],
               ),
             ),
@@ -1496,9 +2006,20 @@ class _BaseLocationPickerMap extends StatelessWidget {
 }
 
 class _RegisterTab extends StatefulWidget {
-  const _RegisterTab({required this.controller});
+  const _RegisterTab({
+    required this.controller,
+    required this.searchUnavailableReason,
+    required this.sessionExpired,
+    required this.onReauthenticate,
+  });
 
   final ReachTrailController controller;
+
+  /// Non-null while the app runs offline on a cached session.
+  final String? searchUnavailableReason;
+  /// True when the auth service itself has seen the session rejected.
+  final bool sessionExpired;
+  final Future<void> Function() onReauthenticate;
 
   @override
   State<_RegisterTab> createState() => _RegisterTabState();
@@ -1557,7 +2078,11 @@ class _RegisterTabState extends State<_RegisterTab> {
                 children: [
                   Expanded(
                     child: FilledButton(
-                      onPressed: controller.isSearching ? null : _runSearch,
+                      // Searching without a base location cannot rank or filter
+                      // anything, so the action is disabled rather than failing.
+                      onPressed: controller.isSearching || base == null
+                          ? null
+                          : _runSearch,
                       child: controller.isSearching
                           ? const SizedBox.square(
                               dimension: 18,
@@ -1589,20 +2114,32 @@ class _RegisterTabState extends State<_RegisterTab> {
                     });
                   },
                 ),
+              // Not an error: the user simply has not set a base yet.
               if (base == null)
-                const Text(
-                  '先に基準地点を登録してください。',
-                  style: TextStyle(color: Colors.redAccent),
+                Text(
+                  'Base タブで基準地点を登録すると検索できます。',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              if (widget.searchUnavailableReason case final reason?)
+                _NoticeBanner(message: reason, icon: Icons.cloud_off),
+              if (widget.sessionExpired || controller.sessionExpired)
+                _NoticeBanner(
+                  message: 'ログインセッションの有効期限が切れました。再度サインインすると検索を再開できます。',
+                  icon: Icons.lock_clock,
+                  action: FilledButton(
+                    onPressed: widget.onReauthenticate,
+                    child: const Text('再サインイン'),
+                  ),
                 ),
               if (controller.configErrorMessage != null)
                 Text(
                   controller.configErrorMessage!,
-                  style: const TextStyle(color: Colors.redAccent),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               if (controller.errorMessage != null)
                 Text(
                   controller.errorMessage!,
-                  style: const TextStyle(color: Colors.redAccent),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
             ],
           ),
@@ -1707,8 +2244,11 @@ class _RegisterTabState extends State<_RegisterTab> {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
+      // Dragging the sheet away would skip the unsaved-changes confirmation,
+      // which the close button and the back gesture both honour.
+      enableDrag: false,
       builder: (context) =>
-          _RecordSheet(controller: widget.controller, initialPlace: place),
+          RecordSheet(controller: widget.controller, initialPlace: place),
     );
     if (saved == true && context.mounted) {
       ScaffoldMessenger.of(
@@ -1769,6 +2309,46 @@ class _RegisterTabState extends State<_RegisterTab> {
       floorLabel: buildingCandidate.floorLabel,
       floorNumber: buildingCandidate.floorNumber,
       rawPayload: buildingCandidate.rawPayload,
+    );
+  }
+}
+
+/// A calm, non-red banner for states the user cannot fix by retrying, such as
+/// being offline or needing to sign in again.
+class _NoticeBanner extends StatelessWidget {
+  const _NoticeBanner({required this.message, required this.icon, this.action});
+
+  final String message;
+  final IconData icon;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFF7C58A)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 10,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: const Color(0xFFB45309)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(message)),
+              ],
+            ),
+            if (action != null)
+              Align(alignment: Alignment.centerRight, child: action!),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1961,7 +2541,7 @@ class _EmptyCandidateState extends StatelessWidget {
         if (buildingSearchError != null)
           Text(
             buildingSearchError!,
-            style: const TextStyle(color: Colors.redAccent),
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         if (buildingSearchResults.isNotEmpty)
           ...buildingSearchResults.map(
@@ -2523,7 +3103,7 @@ class _CandidateMap extends StatelessWidget {
           children: [
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'reachtrail_app',
+              userAgentPackageName: tileUserAgentPackageName,
             ),
             if (baseLocation != null && selectedPlace != null)
               PolylineLayer(
@@ -2575,9 +3155,26 @@ class _CandidateMap extends StatelessWidget {
                 ),
               ],
             ),
+            // Last so no marker or polyline can be drawn over the attribution.
+            const _OpenStreetMapAttribution(),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// OpenStreetMap's tile usage policy requires visible attribution on every map.
+class _OpenStreetMapAttribution extends StatelessWidget {
+  const _OpenStreetMapAttribution();
+
+  @override
+  Widget build(BuildContext context) {
+    // Simple rather than rich: the rich widget hides the credit behind a badge
+    // the user has to tap, which does not count as visible attribution.
+    return const SimpleAttributionWidget(
+      alignment: Alignment.bottomLeft,
+      source: Text('OpenStreetMap contributors'),
     );
   }
 }
@@ -2858,8 +3455,12 @@ String _formatRawPayload(String rawPayload) {
   return encoder.convert(parsed);
 }
 
-class _RecordSheet extends StatefulWidget {
-  const _RecordSheet({
+/// The create/edit form for a record.
+///
+/// Public so a widget test can pump it directly.
+class RecordSheet extends StatefulWidget {
+  const RecordSheet({
+    super.key,
     required this.controller,
     this.initialPlace,
     this.existingRecord,
@@ -2870,10 +3471,10 @@ class _RecordSheet extends StatefulWidget {
   final DineChallengeRecord? existingRecord;
 
   @override
-  State<_RecordSheet> createState() => _RecordSheetState();
+  State<RecordSheet> createState() => _RecordSheetState();
 }
 
-class _RecordSheetState extends State<_RecordSheet> {
+class _RecordSheetState extends State<RecordSheet> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _addressController;
@@ -2893,6 +3494,10 @@ class _RecordSheetState extends State<_RecordSheet> {
   DineType _dineType = DineType.dineIn;
   DateTime _visitedAt = DateTime.now();
   bool _submitting = false;
+
+  /// Set once the user has typed or picked anything, so closing the sheet by
+  /// accident cannot throw the entry away without asking.
+  bool _isDirty = false;
   bool _hasElevator = true;
   late bool _showPlaceDetails;
   late bool _showVisitDetails;
@@ -2901,7 +3506,16 @@ class _RecordSheetState extends State<_RecordSheet> {
   void initState() {
     super.initState();
     final place = widget.initialPlace;
-    _nameController = TextEditingController(text: place?.name ?? '');
+    // A placeholder carries fabricated data (0, 0 and a stand-in name) purely
+    // so the record list stays readable. Offering it back as if the user had
+    // typed it would let a save write those coordinates for real, so the
+    // fields start empty and the form's own required rules take over.
+    final isPlaceholder = place?.isPlaceholder ?? false;
+    _nameController = TextEditingController(
+      text: isPlaceholder && place!.name == placeholderPlaceName
+          ? ''
+          : place?.name ?? '',
+    );
     _addressController = TextEditingController(text: place?.address ?? '');
     _buildingController = TextEditingController(
       text: place?.buildingName ?? '',
@@ -2915,8 +3529,12 @@ class _RecordSheetState extends State<_RecordSheet> {
     _elevatorRideCountController = TextEditingController(
       text: place?.elevatorRideCount?.toString() ?? '',
     );
-    _latController = TextEditingController(text: place?.lat.toString() ?? '');
-    _lngController = TextEditingController(text: place?.lng.toString() ?? '');
+    _latController = TextEditingController(
+      text: isPlaceholder ? '' : place?.lat.toString() ?? '',
+    );
+    _lngController = TextEditingController(
+      text: isPlaceholder ? '' : place?.lng.toString() ?? '',
+    );
     _routeDistanceController = TextEditingController(
       text: widget.existingRecord?.routeDistanceMeters.toStringAsFixed(0) ?? '',
     );
@@ -2956,10 +3574,47 @@ class _RecordSheetState extends State<_RecordSheet> {
     ]) {
       controller.addListener(_refreshRequiredStatus);
     }
+    for (final controller in _editableControllers) {
+      controller.addListener(_markDirty);
+    }
+  }
+
+  List<TextEditingController> get _editableControllers => [
+    _nameController,
+    _addressController,
+    _buildingController,
+    _floorLabelController,
+    _entranceFloorLabelController,
+    _elevatorRideCountController,
+    _latController,
+    _lngController,
+    _routeDistanceController,
+    _categoryController,
+    _menuController,
+    _priceController,
+    _paymentController,
+    _memoController,
+    _timeLimitController,
+  ];
+
+  void _markDirty() {
+    if (_isDirty) {
+      return;
+    }
+    // Without a rebuild the PopScope keeps its stale `canPop: true` and the
+    // back gesture discards the entry without asking.
+    if (mounted) {
+      setState(() => _isDirty = true);
+    } else {
+      _isDirty = true;
+    }
   }
 
   @override
   void dispose() {
+    for (final controller in _editableControllers) {
+      controller.removeListener(_markDirty);
+    }
     _nameController.dispose();
     _addressController.dispose();
     _buildingController.dispose();
@@ -3018,97 +3673,148 @@ class _RecordSheetState extends State<_RecordSheet> {
   Widget build(BuildContext context) {
     final viewInsets = MediaQuery.of(context).viewInsets;
     final missingRequiredLabels = _missingRequiredLabels;
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 20,
-        bottom: viewInsets.bottom + 20,
-      ),
-      child: SingleChildScrollView(
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            spacing: 14,
-            children: [
-              _RecordSheetHeader(
-                title: widget.existingRecord != null
-                    ? '記録を編集'
-                    : widget.initialPlace == null
-                    ? '手入力で記録'
-                    : '候補から記録',
-                missingRequiredLabels: missingRequiredLabels,
-              ),
-              TextFormField(
-                controller: _nameController,
-                decoration: _fieldDecoration('店舗名', isRequired: true),
-                validator: _required,
-              ),
-              _RecordSheetSection(
-                title: 'お店の詳細',
-                subtitle: _showPlaceDetails
-                    ? '位置、階数、移動負荷を確認できます。'
-                    : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
-                expanded: _showPlaceDetails,
-                onExpansionChanged: (value) =>
-                    setState(() => _showPlaceDetails = value),
-                children: [_buildPlaceDetailsFields()],
-              ),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: DineType.values.map((type) {
-                  return ChoiceChip(
-                    label: Text(type == DineType.dineIn ? '店内飲食' : 'テイクアウト'),
-                    selected: _dineType == type,
-                    onSelected: (_) => setState(() => _dineType = type),
-                  );
-                }).toList(),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _timeLimitController,
-                      keyboardType: TextInputType.number,
-                      decoration: _fieldDecoration('制限時間(分)', isRequired: true),
-                      validator: _requiredInt,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _pickDateTime,
-                      icon: const Icon(Icons.event),
-                      label: Text(
-                        '${_visitedAt.year}/${_visitedAt.month}/${_visitedAt.day} ${_visitedAt.hour.toString().padLeft(2, '0')}:${_visitedAt.minute.toString().padLeft(2, '0')}',
+    return PopScope(
+      canPop: !_isDirty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          return;
+        }
+        unawaited(_close());
+      },
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 20,
+          bottom: viewInsets.bottom + 20,
+        ),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: 14,
+              children: [
+                _RecordSheetHeader(
+                  title: widget.existingRecord != null
+                      ? '記録を編集'
+                      : widget.initialPlace == null
+                      ? '手入力で記録'
+                      : '候補から記録',
+                  missingRequiredLabels: missingRequiredLabels,
+                  onClose: _close,
+                ),
+                TextFormField(
+                  controller: _nameController,
+                  decoration: _fieldDecoration('店舗名', isRequired: true),
+                  validator: _required,
+                ),
+                _RecordSheetSection(
+                  title: 'お店の詳細',
+                  subtitle: _showPlaceDetails
+                      ? '位置、階数、移動負荷を確認できます。'
+                      : '候補の位置情報は入力済みです。必要な時だけ開いて修正できます。',
+                  expanded: _showPlaceDetails,
+                  onExpansionChanged: (value) =>
+                      setState(() => _showPlaceDetails = value),
+                  children: [_buildPlaceDetailsFields()],
+                ),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: DineType.values.map((type) {
+                    return ChoiceChip(
+                      label: Text(type == DineType.dineIn ? '店内飲食' : 'テイクアウト'),
+                      selected: _dineType == type,
+                      onSelected: (_) {
+                        _markDirty();
+                        setState(() => _dineType = type);
+                      },
+                    );
+                  }).toList(),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _timeLimitController,
+                        keyboardType: TextInputType.number,
+                        decoration: _fieldDecoration(
+                          '制限時間(分)',
+                          isRequired: true,
+                        ),
+                        validator: _requiredInt,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              _RecordSheetSection(
-                title: '食事メモ',
-                subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
-                expanded: _showVisitDetails,
-                onExpansionChanged: (value) =>
-                    setState(() => _showVisitDetails = value),
-                children: [_buildVisitDetailsFields()],
-              ),
-              _RecordSaveBar(
-                canSubmit: _canSubmit,
-                isSubmitting: _submitting,
-                isEditing: widget.existingRecord != null,
-                missingRequiredLabels: missingRequiredLabels,
-                onSubmit: _submitting || !_canSubmit ? null : _submit,
-              ),
-            ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _pickDateTime,
+                        icon: const Icon(Icons.event),
+                        label: Text(
+                          '${_visitedAt.year}/${_visitedAt.month}/${_visitedAt.day} ${_visitedAt.hour.toString().padLeft(2, '0')}:${_visitedAt.minute.toString().padLeft(2, '0')}',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                _RecordSheetSection(
+                  title: '食事メモ',
+                  subtitle: 'メニュー、価格、支払い方法、メモは後からでも追記できます。',
+                  expanded: _showVisitDetails,
+                  onExpansionChanged: (value) =>
+                      setState(() => _showVisitDetails = value),
+                  children: [_buildVisitDetailsFields()],
+                ),
+                _RecordSaveBar(
+                  canSubmit: _canSubmit,
+                  isSubmitting: _submitting,
+                  isEditing: widget.existingRecord != null,
+                  missingRequiredLabels: missingRequiredLabels,
+                  onSubmit: _submitting || !_canSubmit ? null : _submit,
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _close() async {
+    if (!await _confirmDiscard() || !mounted) {
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  /// Returns true when the sheet may be closed.
+  Future<bool> _confirmDiscard() async {
+    if (!_isDirty || _submitting) {
+      return true;
+    }
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('入力内容を破棄しますか？'),
+        content: const Text('保存していない入力内容は失われます。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('編集を続ける'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('破棄する'),
+          ),
+        ],
+      ),
+    );
+    return discard == true;
   }
 
   Widget _buildPlaceDetailsFields() {
@@ -3181,7 +3887,10 @@ class _RecordSheetState extends State<_RecordSheet> {
           title: const Text('店舗側にエレベータあり'),
           subtitle: const Text('入口階から目的階までの縦移動負荷を軽減します。'),
           value: _hasElevator,
-          onChanged: (value) => setState(() => _hasElevator = value),
+          onChanged: (value) {
+            _markDirty();
+            setState(() => _hasElevator = value);
+          },
         ),
         if (_hasElevator)
           TextFormField(
@@ -3234,7 +3943,9 @@ class _RecordSheetState extends State<_RecordSheet> {
               child: TextFormField(
                 controller: _priceController,
                 keyboardType: TextInputType.number,
-                decoration: _fieldDecoration('価格'),
+                // A pasted "1,200" would otherwise silently parse as null.
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: _fieldDecoration('価格', hintText: '例: 1200'),
               ),
             ),
             const SizedBox(width: 12),
@@ -3274,10 +3985,17 @@ class _RecordSheetState extends State<_RecordSheet> {
   }
 
   Future<void> _pickDateTime() async {
+    final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
+      // A record that already stores an older visit must not open a picker
+      // that cannot represent it.
+      firstDate: _visitedAt.isBefore(DateTime(2020))
+          ? DateTime(_visitedAt.year)
+          : DateTime(2020),
+      // A visit cannot have happened in the future; the only exception is a
+      // record that already stores one, which must stay selectable.
+      lastDate: _visitedAt.isAfter(now) ? _visitedAt : now,
       initialDate: _visitedAt,
     );
     if (date == null || !mounted) {
@@ -3290,6 +4008,7 @@ class _RecordSheetState extends State<_RecordSheet> {
     if (time == null || !mounted) {
       return;
     }
+    _markDirty();
     setState(() {
       _visitedAt = DateTime(
         date.year,
@@ -3305,6 +4024,13 @@ class _RecordSheetState extends State<_RecordSheet> {
     if (!_formKey.currentState!.validate()) {
       return;
     }
+    final lat = double.tryParse(_latController.text.trim());
+    final lng = double.tryParse(_lngController.text.trim());
+    if (lat == null || lng == null) {
+      // The validator above already says so on the fields themselves; this is
+      // the last guard against ever storing a coordinate-less place.
+      return;
+    }
     setState(() => _submitting = true);
     final floorNumber = parseFloorNumber(_floorLabelController.text);
     final entranceFloorNumber = parseFloorNumber(
@@ -3313,12 +4039,13 @@ class _RecordSheetState extends State<_RecordSheet> {
     final place = Place(
       id: widget.initialPlace?.id ?? 'manual-${_newLocalId()}',
       provider: widget.initialPlace?.provider ?? 'manual',
+      // A bare millisecond timestamp collides when two records are saved in the
+      // same millisecond (web `DateTime` has no finer resolution).
       providerPlaceId:
-          widget.initialPlace?.providerPlaceId ??
-          'manual-${DateTime.now().millisecondsSinceEpoch}',
+          widget.initialPlace?.providerPlaceId ?? 'manual-${_newLocalId()}',
       name: _nameController.text.trim(),
-      lat: double.parse(_latController.text.trim()),
-      lng: double.parse(_lngController.text.trim()),
+      lat: lat,
+      lng: lng,
       address: _addressController.text.trim(),
       buildingName: _buildingController.text.trim(),
       floorLabel: _floorLabelController.text.trim(),
@@ -3345,7 +4072,9 @@ class _RecordSheetState extends State<_RecordSheet> {
         timeLimitMinutes: int.parse(_timeLimitController.text.trim()),
         dineType: _dineType,
         menu: _menuController.text.trim(),
-        price: int.tryParse(_priceController.text.trim()),
+        price: int.tryParse(
+          _priceController.text.trim().replaceAll(',', '').replaceAll('，', ''),
+        ),
         paymentMethod: _paymentController.text.trim(),
         memo: _memoController.text.trim(),
       );
@@ -3395,10 +4124,12 @@ class _RecordSheetHeader extends StatelessWidget {
   const _RecordSheetHeader({
     required this.title,
     required this.missingRequiredLabels,
+    required this.onClose,
   });
 
   final String title;
   final List<String> missingRequiredLabels;
+  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -3409,7 +4140,16 @@ class _RecordSheetHeader extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 10,
       children: [
-        Text(title, style: theme.textTheme.headlineSmall),
+        Row(
+          children: [
+            Expanded(child: Text(title, style: theme.textTheme.headlineSmall)),
+            IconButton(
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+              tooltip: '閉じる',
+            ),
+          ],
+        ),
         DecoratedBox(
           decoration: BoxDecoration(
             color: ready ? const Color(0xFFE6F6F3) : const Color(0xFFFFF7ED),
@@ -3503,27 +4243,31 @@ class _RecordSaveBar extends StatelessWidget {
         ? '必須項目は入力済みです。'
         : '未入力: ${missingRequiredLabels.join('・')}';
 
-    return Row(
+    // Stacked rather than side by side: at a large font scale a row would push
+    // the button off-screen.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: Text(
-            helperText,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: canSubmit
-                  ? const Color(0xFF0F766E)
-                  : const Color(0xFFB45309),
-            ),
+        Text(
+          helperText,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: canSubmit
+                ? const Color(0xFF0F766E)
+                : const Color(0xFFB45309),
           ),
         ),
-        const SizedBox(width: 12),
-        FilledButton(
-          onPressed: onSubmit,
-          child: Text(
-            isSubmitting
-                ? '保存中...'
-                : isEditing
-                ? '更新する'
-                : '保存する',
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerRight,
+          child: FilledButton(
+            onPressed: onSubmit,
+            child: Text(
+              isSubmitting
+                  ? '保存中...'
+                  : isEditing
+                  ? '更新する'
+                  : '保存する',
+            ),
           ),
         ),
       ],
@@ -3542,7 +4286,6 @@ class _MapTab extends StatefulWidget {
 
 class _MapTabState extends State<_MapTab> {
   final _mapController = MapController();
-  _MapMode _mode = _MapMode.myMap;
   String? _selectedPlaceId;
 
   @override
@@ -3570,49 +4313,35 @@ class _MapTabState extends State<_MapTab> {
       children: [
         _SectionCard(
           title: 'Map',
-          subtitle: _mode == _MapMode.myMap
-              ? '現在の基準値で記録したお店をマップで振り返ります。'
-              : '基準値から徒歩15分圏内に登録したユーザーのお店をまとめて表示します。',
+          // The shared "nearby" view is not built yet, so nothing here promises
+          // it.
+          subtitle: '現在の基準地点で記録したお店をマップで振り返ります。',
           child: baseLocation == null
-              ? const Text('先に「Base」タブで基準値を設定してください。')
+              ? const Text('先に「Base」タブで基準地点を設定してください。')
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   spacing: 16,
                   children: [
                     _BaseLocationBanner(baseLocation: baseLocation),
-                    _MapModeSelector(
-                      mode: _mode,
-                      onChanged: (mode) {
-                        setState(() => _mode = mode);
-                      },
-                    ),
-                    IndexedStack(
-                      index: _mode.index,
-                      children: [
-                        _MyMapView(
-                          mapController: _mapController,
-                          baseLocation: baseLocation,
-                          entries: entries,
-                          selectedPlaceId: effectiveSelectedId,
-                          recordCount: widget.controller.records
-                              .where(
-                                (record) =>
-                                    record.baseLocationId == baseLocation.id,
-                              )
-                              .length,
-                          onSelectEntry: _selectEntry,
-                          onEditRecord: _editRecord,
-                          onDeletePlaceRecords: _deletePlaceRecords,
-                        ),
-                        const _NearbySharedView(),
-                      ],
+                    _MyMapView(
+                      mapController: _mapController,
+                      baseLocation: baseLocation,
+                      entries: entries,
+                      selectedPlaceId: effectiveSelectedId,
+                      recordCount: widget.controller.records
+                          .where(
+                            (record) =>
+                                record.baseLocationId == baseLocation.id,
+                          )
+                          .length,
+                      onSelectEntry: _selectEntry,
+                      onEditRecord: _editRecord,
+                      onDeletePlaceRecords: _deletePlaceRecords,
                     ),
                   ],
                 ),
         ),
-        if (baseLocation != null &&
-            _mode == _MapMode.myMap &&
-            entries.isNotEmpty) ...[
+        if (baseLocation != null && entries.isNotEmpty) ...[
           const SizedBox(height: 16),
           _SectionCard(
             title: 'Place Ranking',
@@ -3639,16 +4368,31 @@ class _MapTabState extends State<_MapTab> {
     setState(() {
       _selectedPlaceId = entry.place.id;
     });
-    _mapController.move(latlong.LatLng(entry.place.lat, entry.place.lng), 16);
+    // The map may not be attached yet (or may have been rebuilt), in which case
+    // flutter_map throws; the selection itself is already applied.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      try {
+        _mapController.move(
+          latlong.LatLng(entry.place.lat, entry.place.lng),
+          16,
+        );
+      } catch (_) {
+        // Nothing to recover: the list selection is the source of truth.
+      }
+    });
   }
 
   Future<void> _editRecord(DineChallengeRecord record) async {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _RecordSheet(
+      enableDrag: false,
+      builder: (context) => RecordSheet(
         controller: widget.controller,
-        initialPlace: Place.fromJson(record.placeSnapshot),
+        initialPlace: placeFromSnapshot(record.placeSnapshot),
         existingRecord: record,
       ),
     );
@@ -3713,156 +4457,6 @@ class _MapTabState extends State<_MapTab> {
   }
 }
 
-enum _MapMode { myMap, nearby }
-
-class _MapModeSelector extends StatelessWidget {
-  const _MapModeSelector({required this.mode, required this.onChanged});
-
-  final _MapMode mode;
-  final ValueChanged<_MapMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 640;
-        final tabs = [
-          _MapModeTab(
-            mode: _MapMode.myMap,
-            selectedMode: mode,
-            icon: Icons.map,
-            label: 'マイマップ',
-            description: '自分の記録',
-            onChanged: onChanged,
-          ),
-          _MapModeTab(
-            mode: _MapMode.nearby,
-            selectedMode: mode,
-            icon: Icons.groups,
-            label: '近くの共有',
-            description: '今後対応予定',
-            onChanged: onChanged,
-          ),
-        ];
-
-        if (compact) {
-          return Column(spacing: 10, children: tabs);
-        }
-
-        return Row(
-          children: [
-            Expanded(child: tabs[0]),
-            const SizedBox(width: 12),
-            Expanded(child: tabs[1]),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _MapModeTab extends StatelessWidget {
-  const _MapModeTab({
-    required this.mode,
-    required this.selectedMode,
-    required this.icon,
-    required this.label,
-    required this.description,
-    required this.onChanged,
-  });
-
-  final _MapMode mode;
-  final _MapMode selectedMode;
-  final IconData icon;
-  final String label;
-  final String description;
-  final ValueChanged<_MapMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final selected = mode == selectedMode;
-    final theme = Theme.of(context);
-    final color = selected ? const Color(0xFF0F766E) : const Color(0xFF475569);
-
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: label,
-      child: InkWell(
-        onTap: () => onChanged(mode),
-        borderRadius: BorderRadius.circular(22),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: selected ? const Color(0xFFE6F6F3) : Colors.white,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(
-              color: selected
-                  ? const Color(0xFF0F766E)
-                  : const Color(0xFFDED7CC),
-              width: selected ? 1.8 : 1,
-            ),
-            boxShadow: [
-              if (selected)
-                BoxShadow(
-                  color: const Color(0xFF0F766E).withValues(alpha: 0.16),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-            ],
-          ),
-          child: Row(
-            children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: selected
-                      ? const Color(0xFF0F766E)
-                      : const Color(0xFFF8F4EA),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Icon(
-                    selected ? Icons.check_circle : icon,
-                    color: selected ? Colors.white : color,
-                    size: 24,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  spacing: 2,
-                  children: [
-                    Text(
-                      label,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: color,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(
-                      description,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: selected
-                            ? const Color(0xFF0F766E)
-                            : const Color(0xFF64748B),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _BaseLocationBanner extends StatelessWidget {
   const _BaseLocationBanner({required this.baseLocation});
 
@@ -3883,7 +4477,7 @@ class _BaseLocationBanner extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                '基準値: ${baseLocation.name}',
+                '基準地点: ${baseLocation.name}',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
             ),
@@ -3918,7 +4512,7 @@ class _MyMapView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Text('この基準値でまだお店が記録されていません。「Register」タブから追加してください。');
+      return const Text('この基準地点でまだお店が記録されていません。「Register」タブから追加してください。');
     }
 
     return Column(
@@ -3952,17 +4546,6 @@ class _MyMapView extends StatelessWidget {
           onDeletePlaceRecords: onDeletePlaceRecords,
         ),
       ],
-    );
-  }
-}
-
-class _NearbySharedView extends StatelessWidget {
-  const _NearbySharedView();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Text(
-      '近くの共有は今後追加予定です。同じエリアで働く人のお店情報を、基準値から15分圏内でまとめて表示できるようになります。',
     );
   }
 }
@@ -4280,7 +4863,11 @@ List<_SharedPlaceEntry> _buildMapEntries(
     final latest = records.reduce(
       (a, b) => a.visitedAt.isAfter(b.visitedAt) ? a : b,
     );
-    final place = Place.fromJson(latest.placeSnapshot);
+    final place = Place.tryFromJson(latest.placeSnapshot);
+    if (place == null) {
+      // Without coordinates the entry cannot be drawn on the map or radar.
+      continue;
+    }
     final averageDifficulty =
         records.fold<double>(0, (sum, record) => sum + record.difficultyScore) /
         records.length;
@@ -4425,9 +5012,10 @@ class _RecordsTab extends StatelessWidget {
                       final saved = await showModalBottomSheet<bool>(
                         context: context,
                         isScrollControlled: true,
-                        builder: (context) => _RecordSheet(
+                        enableDrag: false,
+                        builder: (context) => RecordSheet(
                           controller: controller,
-                          initialPlace: Place.fromJson(record.placeSnapshot),
+                          initialPlace: placeFromSnapshot(record.placeSnapshot),
                           existingRecord: record,
                         ),
                       );
@@ -4451,7 +5039,7 @@ class _RecordsTab extends StatelessWidget {
     BuildContext context,
     DineChallengeRecord record,
   ) async {
-    final place = Place.fromJson(record.placeSnapshot);
+    final place = placeFromSnapshot(record.placeSnapshot);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -4502,7 +5090,7 @@ class _RecordTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final place = Place.fromJson(record.placeSnapshot);
+    final place = placeFromSnapshot(record.placeSnapshot);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -4515,28 +5103,11 @@ class _RecordTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           spacing: 8,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    place.name,
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                Text(
-                  '${record.visitedAt.year}/${record.visitedAt.month}/${record.visitedAt.day}',
-                ),
-                IconButton(
-                  onPressed: onEdit,
-                  icon: const Icon(Icons.edit_outlined),
-                  tooltip: '編集して再保存',
-                ),
-                IconButton(
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline),
-                  tooltip: '削除',
-                ),
-              ],
+            RecordCardHeader(
+              placeName: place.name,
+              visitedAt: record.visitedAt,
+              onEdit: onEdit,
+              onDelete: onDelete,
             ),
             Text(place.address),
             Wrap(
@@ -4564,6 +5135,7 @@ class _RecordTile extends StatelessWidget {
                 _Tag(
                   label: record.dineType == DineType.dineIn ? '店内飲食' : 'テイクアウト',
                 ),
+                _Tag(label: '${record.timeLimitMinutes}分'),
                 _Tag(label: 'v${record.scoreVersion}'),
               ],
             ),
@@ -4578,6 +5150,88 @@ class _RecordTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Header row of a record card: store name, visit date and the edit/delete
+/// actions.
+///
+/// Public so a widget test can pump it at a large text scale; two icon buttons
+/// plus a date used to overflow the row once the system font was enlarged, so
+/// the actions live in a single overflow menu and the date may ellipsise.
+class RecordCardHeader extends StatelessWidget {
+  const RecordCardHeader({
+    super.key,
+    required this.placeName,
+    required this.visitedAt,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final String placeName;
+  final DateTime visitedAt;
+  final Future<void> Function() onEdit;
+  final Future<void> Function() onDelete;
+
+  static String formatVisitedDate(DateTime visitedAt) {
+    final month = visitedAt.month.toString().padLeft(2, '0');
+    final day = visitedAt.day.toString().padLeft(2, '0');
+    return '${visitedAt.year}/$month/$day';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            placeName,
+            style: Theme.of(context).textTheme.titleMedium,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const SizedBox(width: 8),
+        // flex: 0 so the date takes the width it needs and the name gives way,
+        // rather than the two sharing the leftover space and both ellipsising.
+        Flexible(
+          flex: 0,
+          child: Text(
+            formatVisitedDate(visitedAt),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        PopupMenuButton<String>(
+          tooltip: 'この記録の操作',
+          onSelected: (value) {
+            if (value == 'edit') {
+              onEdit();
+            } else if (value == 'delete') {
+              onDelete();
+            }
+          },
+          itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: 'edit',
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.edit_outlined),
+                title: Text('編集'),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'delete',
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.delete_outline),
+                title: Text('削除'),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -4612,12 +5266,19 @@ class _BestRecordTile extends StatelessWidget {
               child: record == null
                   ? Text('$label: まだ記録なし')
                   : Text(
-                      '$label: ${Place.fromJson(record!.placeSnapshot).name}',
+                      '$label: ${placeFromSnapshot(record!.placeSnapshot).name}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
             ),
-            if (record != null) Text(metricBuilder(record!)),
+            if (record != null)
+              Flexible(
+                child: Text(
+                  metricBuilder(record!),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
           ],
         ),
       ),
@@ -4653,7 +5314,14 @@ class _BestPlaceTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
             ),
-            if (entry != null) Text('${entry!.count} 回'),
+            if (entry != null)
+              Flexible(
+                child: Text(
+                  '${entry!.count} 回',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
           ],
         ),
       ),

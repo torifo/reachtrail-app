@@ -114,7 +114,8 @@ flutter run --dart-define=YAHOO_API_KEY=<your key>
 非 `web` では `.vars` -> `--dart-define` の順に解決します。
 `web` はアセット設定を読まず、`--dart-define` を使います。
 
-設定変更後は、アプリ内の「設定を再読込」か再起動で反映します。
+設定変更後は、アプリを再起動すると反映します。
+起動時の読み込みに失敗した場合は、エラー画面の「再試行」から読み込み直せます。
 Google ログイン設定や `API_BASE_URL` を変えた場合は、`flutter run` を一度終了してから起動し直してください。
 
 ## 起動方法
