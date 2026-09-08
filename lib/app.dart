@@ -330,6 +330,26 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
   }
 }
 
+/// Formats a whole number with thousands separators.
+///
+/// Distances and scores run into four and five digits, where an unbroken run
+/// of digits is genuinely hard to read at a glance.
+String formatCount(num value) {
+  final rounded = value.round();
+  final digits = rounded.abs().toString();
+  final buffer = StringBuffer(rounded < 0 ? '-' : '');
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) {
+      buffer.write(',');
+    }
+    buffer.write(digits[i]);
+  }
+  return buffer.toString();
+}
+
+/// A distance in metres, grouped and suffixed.
+String formatMeters(num meters) => '${formatCount(meters)}m';
+
 /// Shown in place of a name the snapshot never had.
 const String placeholderPlaceName = '位置情報のない記録';
 
@@ -946,6 +966,21 @@ class ReachTrailController extends ChangeNotifier {
       scoreVersion: currentScoreVersion,
     );
   }
+
+  /// How many records already exist for a place, so a candidate can say it
+  /// has been visited before instead of letting the user register a duplicate
+  /// without noticing.
+  int recordCountForPlace(String placeId) =>
+      records.where((record) => record.placeId == placeId).length;
+
+  /// Whether a place already has a record on the same calendar day.
+  bool hasRecordForPlaceOn(String placeId, DateTime day) => records.any(
+    (record) =>
+        record.placeId == placeId &&
+        record.visitedAt.year == day.year &&
+        record.visitedAt.month == day.month &&
+        record.visitedAt.day == day.day,
+  );
 
   Place _upsertPlace(Place place) {
     final index = places.indexWhere((item) => item.id == place.id);
@@ -2254,6 +2289,10 @@ class _RegisterTabState extends State<_RegisterTab> {
   final _mapController = MapController();
   bool _nearbyOnly = true;
   bool _showDebugInfo = false;
+  bool _showAllCandidates = false;
+
+  /// How many candidates a fresh search shows before the "もっと見る" button.
+  static const int _initialCandidateCount = 5;
   String? _selectedPlaceId;
   String? _lastSearchQuery;
 
@@ -2276,7 +2315,7 @@ class _RegisterTabState extends State<_RegisterTab> {
       padding: const EdgeInsets.all(20),
       children: [
         _SectionCard(
-          title: 'Place Search',
+          title: '店舗検索',
           subtitle: '候補選択を前提にしつつ、候補が弱い場合は手入力で対応できます。',
           child: Column(
             spacing: 16,
@@ -2340,7 +2379,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               // Not an error: the user simply has not set a base yet.
               if (base == null)
                 Text(
-                  'Base タブで基準地点を登録すると検索できます。',
+                  '「基準」タブで基準地点を登録すると検索できます。',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               if (widget.searchUnavailableReason case final reason?)
@@ -2369,7 +2408,7 @@ class _RegisterTabState extends State<_RegisterTab> {
         ),
         const SizedBox(height: 16),
         _SectionCard(
-          title: 'Candidates',
+          title: '候補',
           subtitle: '基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
           child: controller.searchResults.isEmpty
               ? _EmptyCandidateState(
@@ -2387,24 +2426,41 @@ class _RegisterTabState extends State<_RegisterTab> {
                 )
               : Column(
                   spacing: 12,
-                  children: controller.searchResults
-                      .map(
-                        (place) => _PlaceResultTile(
-                          place: place,
-                          baseLocation: controller.baseLocation,
-                          showDebugInfo: kDebugMode && _showDebugInfo,
-                          isSelected: _selectedPlaceId == place.id,
-                          onSelect: () => _selectPlace(place),
-                          onUse: () => _openRecordSheet(context, place: place),
+                  children: [
+                    for (final place in _visibleCandidates)
+                      _PlaceResultTile(
+                        place: place,
+                        baseLocation: controller.baseLocation,
+                        showDebugInfo: kDebugMode && _showDebugInfo,
+                        isSelected: _selectedPlaceId == place.id,
+                        recordedCount: controller.recordCountForPlace(place.id),
+                        onSelect: () => _selectPlace(place),
+                        onUse: () => _openRecordSheet(context, place: place),
+                      ),
+                    // A provider can return dozens of near-identical results;
+                    // the first few are the ones worth reading, and the rest
+                    // are there on request rather than by default.
+                    if (controller.searchResults.length >
+                        _visibleCandidates.length)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () =>
+                              setState(() => _showAllCandidates = true),
+                          icon: const Icon(Icons.expand_more),
+                          label: Text(
+                            'もっと見る（残り '
+                            '${controller.searchResults.length - _visibleCandidates.length} 件）',
+                          ),
                         ),
-                      )
-                      .toList(),
+                      ),
+                  ],
                 ),
         ),
         if (controller.searchResults.isNotEmpty) ...[
           const SizedBox(height: 16),
           _SectionCard(
-            title: 'Radar',
+            title: 'レーダー',
             subtitle: '船のレーダーのように、基準地点から見た方向と距離で候補を拾います。',
             child: SizedBox(
               height: 360,
@@ -2418,7 +2474,7 @@ class _RegisterTabState extends State<_RegisterTab> {
           ),
           const SizedBox(height: 16),
           _SectionCard(
-            title: 'Candidate Map',
+            title: '候補地図',
             subtitle:
                 'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
             child: SizedBox(
@@ -2437,6 +2493,16 @@ class _RegisterTabState extends State<_RegisterTab> {
     );
   }
 
+  /// The candidates actually rendered: the first few, or all of them once the
+  /// user has asked for the rest.
+  List<Place> get _visibleCandidates {
+    final results = widget.controller.searchResults;
+    if (_showAllCandidates || results.length <= _initialCandidateCount) {
+      return results;
+    }
+    return results.take(_initialCandidateCount).toList();
+  }
+
   Future<void> _runSearch() async {
     final query = _searchController.text.trim();
     if (widget.controller.isSearching || query.isEmpty) {
@@ -2444,6 +2510,8 @@ class _RegisterTabState extends State<_RegisterTab> {
     }
     setState(() {
       _lastSearchQuery = query;
+      // A new search starts collapsed again.
+      _showAllCandidates = false;
     });
     await widget.controller.searchPlaces(query, nearbyOnly: _nearbyOnly);
     if (!mounted) {
@@ -2584,6 +2652,7 @@ class _PlaceResultTile extends StatelessWidget {
     required this.isSelected,
     required this.onSelect,
     required this.onUse,
+    this.recordedCount = 0,
   });
 
   final Place place;
@@ -2592,6 +2661,9 @@ class _PlaceResultTile extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onSelect;
   final VoidCallback onUse;
+
+  /// How many records this place already has.
+  final int recordedCount;
 
   @override
   Widget build(BuildContext context) {
@@ -2639,6 +2711,10 @@ class _PlaceResultTile extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  // First, because "have I been here already?" is the question
+                  // the user is answering when they scan the list.
+                  if (recordedCount > 0)
+                    _Tag(label: '登録済み・$recordedCount回'),
                   _Tag(label: place.provider.toUpperCase()),
                   if (place.buildingName.isNotEmpty)
                     _Tag(label: place.buildingName),
@@ -2646,7 +2722,7 @@ class _PlaceResultTile extends StatelessWidget {
                     _Tag(label: place.floorLabel),
                   if (place.category.isNotEmpty) _Tag(label: place.category),
                   if (distance != null)
-                    _Tag(label: '${distance.round()}m from base'),
+                    _Tag(label: '基準地点から ${formatMeters(distance)}'),
                 ],
               ),
               if (showDebugInfo && place.provider == 'yahoo')
@@ -2660,7 +2736,7 @@ class _PlaceResultTile extends StatelessWidget {
                       OutlinedButton.icon(
                         onPressed: () => _openDebugSheet(context),
                         icon: const Icon(Icons.bug_report_outlined),
-                        label: const Text('Debug'),
+                        label: const Text('デバッグ'),
                       ),
                     const SizedBox(width: 8),
                     FilledButton(
@@ -2813,7 +2889,7 @@ class _BuildingCandidateTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                const _Tag(label: 'BUILDING'),
+                const _Tag(label: '建物'),
                 if (place.floorLabel.isNotEmpty) _Tag(label: place.floorLabel),
                 if (place.category.isNotEmpty) _Tag(label: place.category),
               ],
@@ -2863,14 +2939,14 @@ class _CandidateRadar extends StatelessWidget {
         .where((place) => place.id == selectedPlaceId)
         .firstOrNull;
 
+    // Light, like every other card on the page. The radar used to be a dark
+    // slab dropped into a cream layout, which read as a rendering fault rather
+    // than a deliberate instrument.
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        gradient: const RadialGradient(
-          center: Alignment.center,
-          radius: 1.1,
-          colors: [Color(0xFF103E35), Color(0xFF071C18)],
-        ),
+        color: const Color(0xFFF3F7F5),
+        border: Border.all(color: const Color(0xFFCFE0DA)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -2879,24 +2955,25 @@ class _CandidateRadar extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(Icons.radar, color: Color(0xFF89F0D0)),
+                const Icon(Icons.radar, color: Color(0xFF0F766E)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     selectedPlace == null
                         ? '候補をタップして追跡'
-                        : 'Tracking ${selectedPlace.name}',
+                        : '追跡中: ${selectedPlace.name}',
+                    overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Colors.white,
+                      color: const Color(0xFF123B33),
                       fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
                 Text(
-                  '5 km radius',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelMedium?.copyWith(color: Color(0xFF9CCABD)),
+                  '半径 5 km',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: const Color(0xFF4C6F65),
+                  ),
                 ),
               ],
             ),
@@ -2960,12 +3037,12 @@ class _CandidateRadar extends StatelessWidget {
                                   width: 18,
                                   height: 18,
                                   decoration: BoxDecoration(
-                                    color: const Color(0xFFB4FFF0),
+                                    color: const Color(0xFF0F766E),
                                     shape: BoxShape.circle,
                                     boxShadow: const [
                                       BoxShadow(
-                                        blurRadius: 20,
-                                        color: Color(0x8835F7D0),
+                                        blurRadius: 12,
+                                        color: Color(0x550F766E),
                                       ),
                                     ],
                                   ),
@@ -2985,12 +3062,9 @@ class _CandidateRadar extends StatelessWidget {
               spacing: 10,
               runSpacing: 10,
               children: [
-                _RadarLegend(label: 'Base', color: const Color(0xFFB4FFF0)),
-                _RadarLegend(
-                  label: 'Candidate',
-                  color: const Color(0xFF4ADE80),
-                ),
-                _RadarLegend(label: 'Selected', color: const Color(0xFFF97316)),
+                _RadarLegend(label: '基準', color: const Color(0xFF0F766E)),
+                _RadarLegend(label: '候補', color: const Color(0xFF16A34A)),
+                _RadarLegend(label: '選択中', color: const Color(0xFFEA580C)),
               ],
             ),
           ],
@@ -3008,16 +3082,16 @@ class _RadarPainter extends CustomPainter {
     final ringPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2
-      ..color = const Color(0xFF53B89E).withValues(alpha: 0.35);
+      ..color = const Color(0xFF0F766E).withValues(alpha: 0.30);
     final crossPaint = Paint()
       ..strokeWidth = 1
-      ..color = const Color(0xFF53B89E).withValues(alpha: 0.25);
+      ..color = const Color(0xFF0F766E).withValues(alpha: 0.20);
     final sweepPaint = Paint()
       ..shader = SweepGradient(
         colors: [
           Colors.transparent,
-          const Color(0x5535F7D0),
-          const Color(0x1035F7D0),
+          const Color(0x330F766E),
+          const Color(0x110F766E),
           Colors.transparent,
         ],
         stops: const [0.0, 0.08, 0.16, 0.22],
@@ -3180,17 +3254,17 @@ class _RadarBlip extends StatelessWidget {
               height: isSelected ? 18 : 12,
               decoration: BoxDecoration(
                 color: isSelected
-                    ? const Color(0xFFF97316)
-                    : const Color(0xFF4ADE80),
+                    ? const Color(0xFFEA580C)
+                    : const Color(0xFF16A34A),
                 shape: BoxShape.circle,
                 boxShadow: [
                   BoxShadow(
-                    blurRadius: isSelected ? 20 : 12,
+                    blurRadius: isSelected ? 14 : 8,
                     color:
                         (isSelected
-                                ? const Color(0xFFF97316)
-                                : const Color(0xFF4ADE80))
-                            .withValues(alpha: 0.65),
+                                ? const Color(0xFFEA580C)
+                                : const Color(0xFF16A34A))
+                            .withValues(alpha: 0.35),
                   ),
                 ],
               ),
@@ -3201,12 +3275,15 @@ class _RadarBlip extends StatelessWidget {
           const SizedBox(height: 6),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 80),
+            // Two lines, hard-clamped: an unbounded label used to run past the
+            // radar and print itself over the legend below it.
             child: Text(
-              '${place.name}\n${distanceMeters.round()}m',
+              '${place.name}\n${formatMeters(distanceMeters)}',
               textAlign: TextAlign.center,
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Colors.white,
+                color: const Color(0xFF123B33),
                 fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
@@ -3238,7 +3315,7 @@ class _RadarLegend extends StatelessWidget {
           label,
           style: Theme.of(
             context,
-          ).textTheme.labelSmall?.copyWith(color: Colors.white70),
+          ).textTheme.labelSmall?.copyWith(color: const Color(0xFF4C6F65)),
         ),
       ],
     );
@@ -3350,7 +3427,7 @@ class _CandidateMap extends StatelessWidget {
                     width: 120,
                     height: 56,
                     child: const _MapMarker(
-                      label: 'Base',
+                      label: '基準地点',
                       color: Color(0xFF1D4ED8),
                       isSelected: false,
                     ),
