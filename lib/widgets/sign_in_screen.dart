@@ -192,13 +192,6 @@ class _SignInCard extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             _GoogleSignInAction(authService: authService),
-            const SizedBox(height: 18),
-            Text(
-              'メール認証は今後追加予定です。まずは Google ログインからお試しください。',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: const Color(0xFF475569),
-              ),
-            ),
             if (authService.errorMessage case final message?) ...[
               const SizedBox(height: 16),
               Text(
