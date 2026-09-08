@@ -144,7 +144,10 @@ class _ReachTrailAppState extends State<ReachTrailApp> {
               ),
             ),
           ),
-          home: _authService.isInitializing
+          // A restored session opens straight on the home screen: waiting for
+          // initialization to finish would show a spinner over content that is
+          // already usable, and offline it would never clear.
+          home: _authService.isInitializing && !_authService.isSignedIn
               ? const Scaffold(body: Center(child: CircularProgressIndicator()))
               : !_authService.isSignedIn
               ? ReachTrailSignInScreen(authService: _authService)
