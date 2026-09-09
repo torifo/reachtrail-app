@@ -16,6 +16,7 @@ import 'models/dine_challenge_record.dart';
 import 'models/place.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
+import 'services/location_service.dart';
 import 'services/persistence_service.dart';
 import 'services/place_search_service.dart';
 import 'utils/distance_calculator.dart';
@@ -402,19 +403,29 @@ String _newLocalId() {
   return '${DateTime.now().microsecondsSinceEpoch}-$random';
 }
 
+/// Which point a dine-place search is measured from.
+enum SearchOriginKind { base, current }
+
+/// Id given to the synthetic [BaseLocation] that wraps the device position, so
+/// the UI can tell a current-location origin from a saved base point.
+const String currentLocationOriginId = 'current-location';
+
 class ReachTrailController extends ChangeNotifier {
   ReachTrailController({
     required PersistenceService persistence,
     required LocalConfigService configService,
+    LocationService? locationService,
     String Function()? sessionTokenProvider,
     VoidCallback? onSessionExpired,
     VoidCallback? onNetworkSuccess,
   }) : _persistence = persistence,
        _configService = configService,
+       _locationService = locationService ?? GeolocatorLocationService(),
        _sessionTokenProvider = sessionTokenProvider,
        _onSessionExpired = onSessionExpired,
        _onNetworkSuccess = onNetworkSuccess;
 
+  final LocationService _locationService;
   final PersistenceService _persistence;
   final LocalConfigService _configService;
   final String Function()? _sessionTokenProvider;
@@ -429,6 +440,19 @@ class ReachTrailController extends ChangeNotifier {
   /// offer a re-sign-in instead of a dead end.
   bool sessionExpired = false;
   bool isSearching = false;
+
+  /// Set while a one-shot position lookup is running.
+  bool isLocating = false;
+
+  /// Calm explanation shown when the last lookup failed; null otherwise.
+  String? locationNotice;
+
+  /// True when the user has to flip the permission in OS settings.
+  bool locationNeedsSettings = false;
+
+  /// The point the most recent dine-place search was measured from. Null until
+  /// a search ran, or when the last search could not determine its origin.
+  BaseLocation? lastSearchOrigin;
   bool isBaseSearching = false;
   bool isBuildingSearching = false;
   String? errorMessage;
@@ -662,7 +686,64 @@ class ReachTrailController extends ChangeNotifier {
     await _persistence.savePlaces(places);
   }
 
-  Future<void> searchPlaces(String query, {required bool nearbyOnly}) async {
+  /// One-shot position lookup. Returns null on failure and leaves the reason
+  /// in [locationNotice]; the UI decides where to show it.
+  Future<latlong.LatLng?> locateCurrentPosition() async {
+    if (isLocating) {
+      return null;
+    }
+    isLocating = true;
+    locationNotice = null;
+    locationNeedsSettings = false;
+    notifyListeners();
+    try {
+      final result = await _locationService.getCurrentPosition();
+      if (result.isSuccess) {
+        return latlong.LatLng(result.lat!, result.lng!);
+      }
+      locationNotice = describeLocationFailure(result.failure!);
+      locationNeedsSettings = result.failure == LocationFailure.deniedForever;
+      return null;
+    } finally {
+      isLocating = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> openLocationSettings() => _locationService.openAppSettings();
+
+  void clearLocationNotice() {
+    if (locationNotice == null) {
+      return;
+    }
+    locationNotice = null;
+    locationNeedsSettings = false;
+    notifyListeners();
+  }
+
+  Future<void> searchPlaces(
+    String query, {
+    required bool nearbyOnly,
+    SearchOriginKind origin = SearchOriginKind.base,
+  }) async {
+    BaseLocation? searchFrom = baseLocation;
+    if (origin == SearchOriginKind.current) {
+      final point = await locateCurrentPosition();
+      if (point == null) {
+        lastSearchOrigin = null;
+        searchResults = const [];
+        notifyListeners();
+        return;
+      }
+      // Wrapping the position as a BaseLocation lets the search service rank
+      // and filter from it without learning a second kind of origin.
+      searchFrom = BaseLocation(
+        id: currentLocationOriginId,
+        name: '現在地',
+        lat: point.latitude,
+        lng: point.longitude,
+      );
+    }
     isSearching = true;
     errorMessage = null;
     buildingSearchError = null;
@@ -673,9 +754,10 @@ class ReachTrailController extends ChangeNotifier {
       // so it is not repeated here as a red error.
       searchResults = await _requireSearchService().search(
         query: query,
-        baseLocation: baseLocation,
+        baseLocation: searchFrom,
         nearbyOnly: nearbyOnly,
       );
+      lastSearchOrigin = searchFrom;
       _onNetworkSuccess?.call();
     } catch (error) {
       errorMessage = describeSearchFailure(error);
