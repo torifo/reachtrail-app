@@ -5114,7 +5114,22 @@ class _MyMapView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (entries.isEmpty) {
-      return const Text('この基準地点でまだお店が記録されていません。「登録」タブから追加してください。');
+      final theme = Theme.of(context);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 8,
+        children: [
+          const Text('この基準地点でまだお店が記録されていません。「登録」タブから追加してください。'),
+          Text(
+            'お店を 1 件以上登録すると、この地図で記録を振り返れるようになります。'
+            '今後は、周辺のユーザーと登録したお店の情報を共有して、'
+            '新しいお店を見つけられる機能も予定しています。',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      );
     }
 
     return Column(
