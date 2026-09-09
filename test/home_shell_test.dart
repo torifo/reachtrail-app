@@ -6,6 +6,7 @@ import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/place.dart';
 import 'package:reachtrail_app/services/google_auth_service.dart';
 import 'package:reachtrail_app/services/local_config_service.dart';
+import 'package:reachtrail_app/services/location_service.dart';
 import 'package:reachtrail_app/services/persistence_service.dart';
 import 'package:reachtrail_app/utils/score_calculator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -80,6 +81,11 @@ Future<ReachTrailController> _pumpHome(WidgetTester tester) async {
   final controller = ReachTrailController(
     persistence: persistence,
     configService: _StubConfigService(),
+    // The default geolocator service has no platform channel under `flutter
+    // test`, so every controller built here takes a stub instead.
+    locationService: StubLocationService(
+      const LocationResult.success(lat: 35, lng: 135),
+    ),
   );
   await controller.load();
   addTearDown(controller.dispose);
@@ -171,5 +177,24 @@ void main() {
     await _pressBack(tester);
     await tester.pump();
     expect(find.text('もう一度押すと終了します'), findsOneWidget);
+  });
+
+  testWidgets('switching the search origin relabels the radius switch', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(tester);
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('基準地点から片道徒歩45分圏内で絞り込む'), findsOneWidget);
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在地から片道徒歩45分圏内で絞り込む'), findsOneWidget);
   });
 }

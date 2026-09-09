@@ -2497,6 +2497,10 @@ class _RegisterTabState extends State<_RegisterTab> {
   final _buildingSearchController = TextEditingController();
   final _mapController = MapController();
   bool _nearbyOnly = true;
+
+  /// Which point the next search measures from. Forced to `current` while no
+  /// base point exists, so the tab still works before the base is set.
+  SearchOriginKind _origin = SearchOriginKind.base;
   bool _showDebugInfo = false;
   bool _showAllCandidates = false;
 
@@ -2538,10 +2542,33 @@ class _RegisterTabState extends State<_RegisterTab> {
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => _runSearch(),
               ),
+              SegmentedButton<SearchOriginKind>(
+                segments: [
+                  ButtonSegment(
+                    value: SearchOriginKind.base,
+                    icon: const Icon(Icons.home_work_outlined),
+                    label: const Text('基準地点'),
+                    enabled: base != null,
+                  ),
+                  const ButtonSegment(
+                    value: SearchOriginKind.current,
+                    icon: Icon(Icons.my_location),
+                    label: Text('現在地'),
+                  ),
+                ],
+                selected: {base == null ? SearchOriginKind.current : _origin},
+                onSelectionChanged: (selection) {
+                  setState(() => _origin = selection.first);
+                  controller.clearLocationNotice();
+                },
+              ),
               SwitchListTile(
-                title: const Text('基準地点から片道徒歩45分圏内で絞り込む'),
+                title: Text(
+                  '${_effectiveOrigin == SearchOriginKind.current ? '現在地' : '基準地点'}'
+                  'から片道徒歩45分圏内で絞り込む',
+                ),
                 value: _nearbyOnly,
-                onChanged: base == null
+                onChanged: (base == null && _origin == SearchOriginKind.base)
                     ? null
                     : (value) => setState(() => _nearbyOnly = value),
               ),
@@ -2549,9 +2576,12 @@ class _RegisterTabState extends State<_RegisterTab> {
                 children: [
                   Expanded(
                     child: FilledButton(
-                      // Searching without a base location cannot rank or filter
-                      // anything, so the action is disabled rather than failing.
-                      onPressed: controller.isSearching || base == null
+                      // Without a base point only a current-location search can
+                      // rank or filter anything, so that is the one still open.
+                      onPressed:
+                          controller.isSearching ||
+                              controller.isLocating ||
+                              (base == null && _origin == SearchOriginKind.base)
                           ? null
                           : _runSearch,
                       child: controller.isSearching
@@ -2588,7 +2618,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               // Not an error: the user simply has not set a base yet.
               if (base == null)
                 Text(
-                  '「基準」タブで基準地点を登録すると検索できます。',
+                  '「基準」タブで基準地点を登録すると、基準地点からの検索と記録ができます。現在地からの検索は今でも使えます。',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               if (widget.searchUnavailableReason case final reason?)
@@ -2601,6 +2631,18 @@ class _RegisterTabState extends State<_RegisterTab> {
                     onPressed: widget.onReauthenticate,
                     child: const Text('再サインイン'),
                   ),
+                ),
+              if (controller.locationNotice case final notice?)
+                _NoticeBanner(
+                  message: notice,
+                  icon: Icons.location_off_outlined,
+                  action: controller.locationNeedsSettings
+                      ? OutlinedButton(
+                          onPressed: () =>
+                              unawaited(controller.openLocationSettings()),
+                          child: const Text('設定を開く'),
+                        )
+                      : null,
                 ),
               if (controller.configErrorMessage != null)
                 Text(
@@ -2639,7 +2681,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                     for (final place in _visibleCandidates)
                       _PlaceResultTile(
                         place: place,
-                        baseLocation: controller.baseLocation,
+                        baseLocation: controller.lastSearchOrigin ?? base,
                         showDebugInfo: kDebugMode && _showDebugInfo,
                         isSelected: _selectedPlaceId == place.id,
                         recordedCount: controller.recordCountForPlace(place.id),
@@ -2674,7 +2716,7 @@ class _RegisterTabState extends State<_RegisterTab> {
             child: SizedBox(
               height: 360,
               child: _CandidateRadar(
-                baseLocation: base,
+                baseLocation: controller.lastSearchOrigin ?? base,
                 places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
@@ -2690,7 +2732,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               height: 320,
               child: _CandidateMap(
                 mapController: _mapController,
-                baseLocation: base,
+                baseLocation: controller.lastSearchOrigin ?? base,
                 places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
@@ -2701,6 +2743,13 @@ class _RegisterTabState extends State<_RegisterTab> {
       ],
     );
   }
+
+  /// The origin actually used: the segment's choice, except that without a
+  /// base point only the current location can serve as one.
+  SearchOriginKind get _effectiveOrigin =>
+      widget.controller.baseLocation == null
+      ? SearchOriginKind.current
+      : _origin;
 
   /// The candidates actually rendered: the first few, or all of them once the
   /// user has asked for the rest.
@@ -2722,7 +2771,11 @@ class _RegisterTabState extends State<_RegisterTab> {
       // A new search starts collapsed again.
       _showAllCandidates = false;
     });
-    await widget.controller.searchPlaces(query, nearbyOnly: _nearbyOnly);
+    await widget.controller.searchPlaces(
+      query,
+      nearbyOnly: _nearbyOnly,
+      origin: _effectiveOrigin,
+    );
     if (!mounted) {
       return;
     }
@@ -2935,7 +2988,11 @@ class _PlaceResultTile extends StatelessWidget {
                       place.category != baseLocationCategoryMarker)
                     _Tag(label: place.category),
                   if (distance != null)
-                    _Tag(label: '基準地点から ${formatMeters(distance)}'),
+                    _Tag(
+                      label:
+                          '${baseLocation!.id == currentLocationOriginId ? '現在地' : '基準地点'}'
+                          'から ${formatMeters(distance)}',
+                    ),
                 ],
               ),
               if (showDebugInfo && place.provider == 'yahoo')
@@ -3280,7 +3337,12 @@ class _CandidateRadar extends StatelessWidget {
               spacing: 10,
               runSpacing: 10,
               children: [
-                _RadarLegend(label: '基準', color: const Color(0xFF0F766E)),
+                _RadarLegend(
+                  label: baseLocation?.id == currentLocationOriginId
+                      ? '現在地'
+                      : '基準',
+                  color: const Color(0xFF0F766E),
+                ),
                 _RadarLegend(label: '候補', color: const Color(0xFF16A34A)),
                 _RadarLegend(label: '選択中', color: const Color(0xFFEA580C)),
               ],
@@ -3682,9 +3744,11 @@ class _CandidateMap extends StatelessWidget {
                     point: latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
                     width: 120,
                     height: 56,
-                    child: const _MapMarker(
-                      label: '基準地点',
-                      color: Color(0xFF1D4ED8),
+                    child: _MapMarker(
+                      label: baseLocation!.id == currentLocationOriginId
+                          ? '現在地'
+                          : '基準地点',
+                      color: const Color(0xFF1D4ED8),
                       isSelected: false,
                     ),
                   ),
