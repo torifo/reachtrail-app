@@ -17,6 +17,7 @@ import 'models/place.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
 import 'services/location_service.dart';
+import 'services/map_handoff.dart';
 import 'services/persistence_service.dart';
 import 'services/place_search_service.dart';
 import 'utils/distance_calculator.dart';
@@ -2909,6 +2910,46 @@ class _NoticeBanner extends StatelessWidget {
   }
 }
 
+/// Hands the destination to the device's maps app; the OS picks which one.
+class _OpenInMapsButton extends StatelessWidget {
+  const _OpenInMapsButton({required this.place, this.compact = false});
+
+  final Place place;
+
+  /// Icon-only, for rows that have no space for a labelled button.
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    Future<void> open() async {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await openInMapsApp(
+        lat: place.lat,
+        lng: place.lng,
+        label: place.name,
+      );
+      if (!ok) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('地図アプリを開けませんでした。')),
+        );
+      }
+    }
+
+    if (compact) {
+      return IconButton(
+        tooltip: '地図アプリで開く',
+        icon: const Icon(Icons.directions_outlined),
+        onPressed: () => unawaited(open()),
+      );
+    }
+    return OutlinedButton.icon(
+      onPressed: () => unawaited(open()),
+      icon: const Icon(Icons.directions_outlined),
+      label: const Text('地図アプリで開く'),
+    );
+  }
+}
+
 class _PlaceResultTile extends StatelessWidget {
   const _PlaceResultTile({
     required this.place,
@@ -2997,28 +3038,29 @@ class _PlaceResultTile extends StatelessWidget {
               ),
               if (showDebugInfo && place.provider == 'yahoo')
                 _YahooDebugSummary(place: place),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    if (showDebugInfo && place.provider == 'yahoo')
-                      OutlinedButton.icon(
-                        onPressed: () => _openDebugSheet(context),
-                        icon: const Icon(Icons.bug_report_outlined),
-                        label: const Text('デバッグ'),
-                      ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF0F766E),
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: onUse,
-                      child: const Text('この候補で記録'),
+              // A Wrap, not a Row: at a large text scale the three actions no
+              // longer fit on one line on a narrow phone.
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (showDebugInfo && place.provider == 'yahoo')
+                    OutlinedButton.icon(
+                      onPressed: () => _openDebugSheet(context),
+                      icon: const Icon(Icons.bug_report_outlined),
+                      label: const Text('デバッグ'),
                     ),
-                  ],
-                ),
+                  _OpenInMapsButton(place: place),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F766E),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: onUse,
+                    child: const Text('この候補で記録'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -5600,6 +5642,7 @@ class _SharedPlaceRankTile extends StatelessWidget {
                   ],
                 ),
               ),
+              _OpenInMapsButton(place: entry.place, compact: true),
               const Icon(Icons.chevron_right),
             ],
           ),
