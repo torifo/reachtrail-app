@@ -16,9 +16,7 @@ Uri buildMapHandoffUri({
   final trimmed = label.trim();
   switch (platform) {
     case TargetPlatform.android:
-      final query = trimmed.isEmpty
-          ? point
-          : '$point(${Uri.encodeComponent(trimmed)})';
+      final query = trimmed.isEmpty ? point : '$point(${_encodeLabel(trimmed)})';
       return Uri.parse('geo:0,0?q=$query');
     case TargetPlatform.iOS:
       return Uri.https('maps.apple.com', '/', {
@@ -36,6 +34,19 @@ Uri buildMapHandoffUri({
   }
 }
 
+/// Percent-encodes a label for the `geo:` query.
+///
+/// `Uri.encodeComponent` leaves `(` and `)` alone, so a name such as
+/// `餃子の王将(渋谷店)` would close the wrapping parentheses early and the
+/// maps app would read a truncated label.
+String _encodeLabel(String label) => Uri.encodeComponent(
+  label,
+).replaceAll('(', '%28').replaceAll(')', '%29');
+
+/// Hands a URL to the platform. Injected so tests can observe a failure
+/// without a real `url_launcher` platform channel.
+typedef UrlLauncher = Future<bool> Function(Uri uri, {LaunchMode mode});
+
 /// Returns false when no app could take the URL, so the caller can show a
 /// SnackBar instead of failing silently.
 Future<bool> openInMapsApp({
@@ -43,6 +54,7 @@ Future<bool> openInMapsApp({
   required double lng,
   required String label,
   TargetPlatform? platform,
+  UrlLauncher launcher = launchUrl,
 }) async {
   final uri = buildMapHandoffUri(
     lat: lat,
@@ -54,7 +66,7 @@ Future<bool> openInMapsApp({
         platform ?? (kIsWeb ? TargetPlatform.linux : defaultTargetPlatform),
   );
   try {
-    return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    return await launcher(uri, mode: LaunchMode.externalApplication);
   } catch (_) {
     return false;
   }
