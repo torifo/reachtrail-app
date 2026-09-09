@@ -2683,7 +2683,8 @@ class _RegisterTabState extends State<_RegisterTab> {
         const SizedBox(height: 16),
         _SectionCard(
           title: '候補',
-          subtitle: '基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
+          subtitle:
+              '$_originLabelから円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
           child: controller.searchResults.isEmpty
               ? _EmptyCandidateState(
                   searchedQuery: _lastSearchQuery,
@@ -2735,11 +2736,12 @@ class _RegisterTabState extends State<_RegisterTab> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'レーダー',
-            subtitle: '船のレーダーのように、基準地点から見た方向と距離で候補を拾います。',
+            subtitle: '船のレーダーのように、$_originLabelから見た方向と距離で候補を拾います。',
             child: SizedBox(
               height: 360,
               child: _CandidateRadar(
                 baseLocation: controller.lastSearchOrigin ?? base,
+                originLabel: _originLabel,
                 places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
@@ -2750,7 +2752,7 @@ class _RegisterTabState extends State<_RegisterTab> {
           _SectionCard(
             title: '候補地図',
             subtitle:
-                'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
+                'OpenStreetMap ベースの地図で、$_originLabelと候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
             child: SizedBox(
               height: 320,
               child: _CandidateMap(
@@ -2766,6 +2768,13 @@ class _RegisterTabState extends State<_RegisterTab> {
       ],
     );
   }
+
+  /// How to name the point the visible candidates were measured from, so the
+  /// copy does not say 基準地点 next to distances taken from the device.
+  String get _originLabel =>
+      widget.controller.lastSearchOrigin?.id == currentLocationOriginId
+      ? '現在地'
+      : '基準地点';
 
   /// The origin actually used: the segment's choice, except that without a
   /// base point only the current location can serve as one.
@@ -2800,6 +2809,14 @@ class _RegisterTabState extends State<_RegisterTab> {
       origin: _effectiveOrigin,
     );
     if (!mounted) {
+      return;
+    }
+    // When the origin lookup failed the search never ran, so the candidate
+    // panel must stay in its neutral state instead of claiming that this
+    // query found nothing right next to the location banner.
+    if (widget.controller.lastSearchOrigin == null &&
+        widget.controller.locationNotice != null) {
+      setState(() => _lastSearchQuery = null);
       return;
     }
     final results = widget.controller.searchResults;
@@ -3270,9 +3287,14 @@ class _CandidateRadar extends StatelessWidget {
     required this.places,
     required this.selectedPlaceId,
     required this.onSelectPlace,
+    this.originLabel = '基準地点',
   });
 
   final BaseLocation? baseLocation;
+
+  /// What the sweep is centred on, so the empty state can name the right
+  /// point even when the origin was the device position.
+  final String originLabel;
   final List<Place> places;
   final String? selectedPlaceId;
   final ValueChanged<Place> onSelectPlace;
@@ -3280,7 +3302,7 @@ class _CandidateRadar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (baseLocation == null || places.isEmpty) {
-      return const Center(child: Text('基準地点と候補があるとレーダー形式で表示されます。'));
+      return Center(child: Text('$originLabelと候補があるとレーダー形式で表示されます。'));
     }
 
     final selectedPlace = places

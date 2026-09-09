@@ -271,4 +271,71 @@ void main() {
 
     expect(location.settingsOpened, 1);
   });
+
+  testWidgets(
+    'a location failure does not also claim the query found nothing',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(600, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await _pumpHome(
+        tester,
+        withBase: false,
+        locationService: StubLocationService(
+          const LocationResult.failed(LocationFailure.timeout),
+        ),
+      );
+
+      await tester.tap(find.text('登録'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).first, 'curry');
+      await tester.tap(find.widgetWithText(FilledButton, '検索'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('「curry」の店舗候補は見つかりませんでした。'), findsNothing);
+    },
+  );
+
+  testWidgets('candidate copy names the current location as the origin', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(
+      tester,
+      locationService: StubLocationService(
+        const LocationResult.success(lat: 35.6890, lng: 139.6917),
+      ),
+    );
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('現在地から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。'),
+      findsOneWidget,
+    );
+    expect(find.text('船のレーダーのように、現在地から見た方向と距離で候補を拾います。'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('OpenStreetMap ベースの地図で、現在地と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.text('OpenStreetMap ベースの地図で、現在地と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。'),
+      findsOneWidget,
+    );
+  });
 }
