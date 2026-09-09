@@ -1614,6 +1614,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
   final _addressFieldKey = GlobalKey();
+
+  /// Held here so "現在地を使う" can recentre the picker on the new point.
+  final MapController _pickerMapController = MapController();
   Place? _selectedCandidate;
   double? _selectedLat;
   double? _selectedLng;
@@ -1659,6 +1662,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _entryFloorController.dispose();
     _elevatorRideCountController.dispose();
     _memoController.dispose();
+    _pickerMapController.dispose();
     super.dispose();
   }
 
@@ -1710,6 +1714,18 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       icon: const Icon(Icons.edit_location_alt_outlined),
                       label: const Text('住所を手入力で使う'),
                     ),
+                    OutlinedButton.icon(
+                      onPressed: controller.isLocating
+                          ? null
+                          : () => unawaited(_useCurrentPositionAsBase()),
+                      icon: controller.isLocating
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.my_location),
+                      label: const Text('現在地を使う'),
+                    ),
                   ],
                 ),
                 if (controller.baseSearchError != null)
@@ -1718,6 +1734,18 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),
+                  ),
+                if (controller.locationNotice case final notice?)
+                  _NoticeBanner(
+                    message: notice,
+                    icon: Icons.location_off_outlined,
+                    action: controller.locationNeedsSettings
+                        ? OutlinedButton(
+                            onPressed: () =>
+                                unawaited(controller.openLocationSettings()),
+                            child: const Text('設定を開く'),
+                          )
+                        : null,
                   ),
                 if (controller.baseSearchResults.isNotEmpty)
                   Align(
@@ -1753,6 +1781,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   lat: _selectedLat,
                   lng: _selectedLng,
                   onSelected: _selectBasePoint,
+                  mapController: _pickerMapController,
                 ),
                 TextFormField(
                   controller: _floorController,
@@ -2089,6 +2118,24 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     });
   }
 
+  /// Same path as a map tap, so the mismatch tag and save validation apply.
+  Future<void> _useCurrentPositionAsBase() async {
+    final controller = widget.controller;
+    final point = await controller.locateCurrentPosition();
+    if (!mounted || point == null) {
+      return;
+    }
+    _selectBasePoint(point);
+    try {
+      _pickerMapController.move(point, 16);
+    } catch (_) {
+      // The picker may not be attached yet; it opens on the point anyway.
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('現在地を基準地点の位置にしました。名前を入力して保存してください。')),
+    );
+  }
+
   /// A map tap wins over the candidate's coordinates but leaves its name and
   /// address in the form, so the two can disagree. Rather than silently saving
   /// the mismatch the form flags it, here and in the save confirmation.
@@ -2290,6 +2337,7 @@ class _BaseLocationPickerMap extends StatefulWidget {
     required this.lat,
     required this.lng,
     required this.onSelected,
+    this.mapController,
     this.title = '地図で基準地点を選択',
     this.description = '住所候補がうまく出ない場合は、地図をタップして緯度経度を設定できます。',
     this.markerLabel = '基準地点',
@@ -2301,6 +2349,10 @@ class _BaseLocationPickerMap extends StatefulWidget {
   final double? lat;
   final double? lng;
   final ValueChanged<latlong.LatLng> onSelected;
+
+  /// Supplied when the parent needs to recentre the map itself (the base tab
+  /// moves it onto the device position). The map owns one otherwise.
+  final MapController? mapController;
   final String title;
   final String description;
   final String markerLabel;
@@ -2316,11 +2368,14 @@ class _BaseLocationPickerMap extends StatefulWidget {
 }
 
 class _BaseLocationPickerMapState extends State<_BaseLocationPickerMap> {
-  final MapController _mapController = MapController();
+  MapController? _ownedController;
+
+  MapController get _mapController =>
+      widget.mapController ?? (_ownedController ??= MapController());
 
   @override
   void dispose() {
-    _mapController.dispose();
+    _ownedController?.dispose();
     super.dispose();
   }
 
