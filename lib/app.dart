@@ -453,6 +453,12 @@ class ReachTrailController extends ChangeNotifier {
 
   /// The point the most recent dine-place search was measured from. Null until
   /// a search ran, or when the last search could not determine its origin.
+  ///
+  /// This may be a display-only pseudo [BaseLocation] with id
+  /// [currentLocationOriginId], built from the device position so the search
+  /// service and the candidate UI can measure from it. Such a value must never
+  /// be persisted, and must never be used as a record's base location: a
+  /// record's walking distance is always measured from the saved base point.
   BaseLocation? lastSearchOrigin;
   bool isBaseSearching = false;
   bool isBuildingSearching = false;
@@ -562,6 +568,7 @@ class ReachTrailController extends ChangeNotifier {
     searchResults = const [];
     baseSearchResults = const [];
     buildingSearchResults = const [];
+    lastSearchOrigin = null;
     errorMessage = null;
     baseSearchError = null;
     buildingSearchError = null;
@@ -627,6 +634,10 @@ class ReachTrailController extends ChangeNotifier {
     );
     await _persistence.saveBaseLocation(location);
     baseLocation = location;
+    // Candidates found from the previous base would keep showing distances
+    // measured from a point that no longer exists.
+    lastSearchOrigin = null;
+    searchResults = const [];
     if (records.any((record) => record.baseLocationId == location.id)) {
       records = records
           .map(
@@ -660,6 +671,7 @@ class ReachTrailController extends ChangeNotifier {
     baseLocation = null;
     baseSearchResults = const [];
     searchResults = const [];
+    lastSearchOrigin = null;
     notifyListeners();
     return relatedRecordCount;
   }

@@ -580,6 +580,60 @@ void main() {
       },
     );
 
+    test('saving a new base point drops the stale search origin', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+      expect(controller.lastSearchOrigin, isNotNull);
+      expect(controller.searchResults, isNotEmpty);
+
+      await controller.saveBaseLocation(
+        name: 'New Office',
+        lat: 34.0,
+        lng: 135.5,
+        floorLabel: '2F',
+        floorNumber: 2,
+        entryFloorLabel: '1F',
+        entryFloorNumber: 1,
+        hasElevator: false,
+        elevatorRideCount: null,
+        memo: '',
+      );
+
+      // Old tiles would otherwise keep measuring from the previous base.
+      expect(controller.lastSearchOrigin, isNull);
+      expect(controller.searchResults, isEmpty);
+    });
+
+    test('deleting the base point drops the stale search origin', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+      expect(controller.lastSearchOrigin, isNotNull);
+
+      await controller.deleteBaseLocation();
+
+      expect(controller.lastSearchOrigin, isNull);
+    });
+
     test('searching from the current location records the origin', () async {
       final location = StubLocationService(
         const LocationResult.success(lat: 35.0, lng: 135.0),
