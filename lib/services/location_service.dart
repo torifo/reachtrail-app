@@ -2,7 +2,13 @@ import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
 
-enum LocationFailure { serviceDisabled, denied, deniedForever, timeout, unknown }
+enum LocationFailure {
+  serviceDisabled,
+  denied,
+  deniedForever,
+  timeout,
+  unknown,
+}
 
 /// One-shot position lookup result. Either coordinates or a failure, never both.
 class LocationResult {
@@ -88,26 +94,4 @@ class GeolocatorLocationService implements LocationService {
 
   @override
   Future<void> openAppSettings() => Geolocator.openAppSettings();
-}
-
-/// Test double. Lives here so widget tests in other files can share it.
-class StubLocationService implements LocationService {
-  StubLocationService(this.result);
-
-  LocationResult result;
-  int callCount = 0;
-  int settingsOpened = 0;
-
-  @override
-  Future<LocationResult> getCurrentPosition({
-    Duration timeout = const Duration(seconds: 15),
-  }) async {
-    callCount += 1;
-    return result;
-  }
-
-  @override
-  Future<void> openAppSettings() async {
-    settingsOpened += 1;
-  }
 }

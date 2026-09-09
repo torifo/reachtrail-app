@@ -12,6 +12,8 @@ import 'package:reachtrail_app/services/session_cache_service.dart';
 import 'package:reachtrail_app/utils/score_calculator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/stub_location_service.dart';
+
 const _config = LocalConfig(
   placeSearchProvider: 'mock',
   yahooApiKey: '',

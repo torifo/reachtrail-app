@@ -56,10 +56,7 @@ void main() {
       label: 'Gyoza (Shibuya)',
       platform: TargetPlatform.android,
     );
-    expect(
-      uri.toString(),
-      'geo:0,0?q=35.6812,139.7671(Gyoza%20%28Shibuya%29)',
-    );
+    expect(uri.toString(), 'geo:0,0?q=35.6812,139.7671(Gyoza%20%28Shibuya%29)');
   });
 
   test('openInMapsApp reports false when the launcher fails', () async {

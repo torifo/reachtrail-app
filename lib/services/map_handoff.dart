@@ -16,7 +16,9 @@ Uri buildMapHandoffUri({
   final trimmed = label.trim();
   switch (platform) {
     case TargetPlatform.android:
-      final query = trimmed.isEmpty ? point : '$point(${_encodeLabel(trimmed)})';
+      final query = trimmed.isEmpty
+          ? point
+          : '$point(${_encodeLabel(trimmed)})';
       return Uri.parse('geo:0,0?q=$query');
     case TargetPlatform.iOS:
       return Uri.https('maps.apple.com', '/', {
@@ -39,9 +41,8 @@ Uri buildMapHandoffUri({
 /// `Uri.encodeComponent` leaves `(` and `)` alone, so a name such as
 /// `餃子の王将(渋谷店)` would close the wrapping parentheses early and the
 /// maps app would read a truncated label.
-String _encodeLabel(String label) => Uri.encodeComponent(
-  label,
-).replaceAll('(', '%28').replaceAll(')', '%29');
+String _encodeLabel(String label) =>
+    Uri.encodeComponent(label).replaceAll('(', '%28').replaceAll(')', '%29');
 
 /// Hands a URL to the platform. Injected so tests can observe a failure
 /// without a real `url_launcher` platform channel.
