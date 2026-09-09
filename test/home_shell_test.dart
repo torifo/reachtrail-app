@@ -4,11 +4,15 @@ import 'package:reachtrail_app/app.dart';
 import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/place.dart';
+import 'package:reachtrail_app/pages/usage_guide_page.dart';
 import 'package:reachtrail_app/services/google_auth_service.dart';
 import 'package:reachtrail_app/services/local_config_service.dart';
+import 'package:reachtrail_app/services/location_service.dart';
 import 'package:reachtrail_app/services/persistence_service.dart';
 import 'package:reachtrail_app/utils/score_calculator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/stub_location_service.dart';
 
 const _config = LocalConfig(
   placeSearchProvider: 'mock',
@@ -57,29 +61,40 @@ DineChallengeRecord _record() => DineChallengeRecord(
 
 /// Boots the real shell so the tab, its dialogs and its SnackBars are wired
 /// together exactly as they are in the app.
-Future<ReachTrailController> _pumpHome(WidgetTester tester) async {
+Future<ReachTrailController> _pumpHome(
+  WidgetTester tester, {
+  bool withBase = true,
+  LocationService? locationService,
+}) async {
   final persistence = PersistenceService();
-  await persistence.saveBaseLocation(
-    BaseLocation(
-      id: 'base-1',
-      name: 'Office',
-      lat: 35.6812,
-      lng: 139.7671,
-      floorLabel: '10F',
-      floorNumber: 10,
-      entryFloorLabel: '1F',
-      entryFloorNumber: 1,
-      hasElevator: true,
-      elevatorRideCount: 1,
-      memo: '',
-    ),
-  );
-  await persistence.savePlaces([_place]);
-  await persistence.saveRecords([_record()]);
+  if (withBase) {
+    await persistence.saveBaseLocation(
+      BaseLocation(
+        id: 'base-1',
+        name: 'Office',
+        lat: 35.6812,
+        lng: 139.7671,
+        floorLabel: '10F',
+        floorNumber: 10,
+        entryFloorLabel: '1F',
+        entryFloorNumber: 1,
+        hasElevator: true,
+        elevatorRideCount: 1,
+        memo: '',
+      ),
+    );
+    await persistence.savePlaces([_place]);
+    await persistence.saveRecords([_record()]);
+  }
 
   final controller = ReachTrailController(
     persistence: persistence,
     configService: _StubConfigService(),
+    // The default geolocator service has no platform channel under `flutter
+    // test`, so every controller built here takes a stub instead.
+    locationService:
+        locationService ??
+        StubLocationService(const LocationResult.success(lat: 35, lng: 135)),
   );
   await controller.load();
   addTearDown(controller.dispose);
@@ -171,5 +186,173 @@ void main() {
     await _pressBack(tester);
     await tester.pump();
     expect(find.text('もう一度押すと終了します'), findsOneWidget);
+  });
+
+  testWidgets('switching the search origin relabels the radius switch', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(tester);
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('基準地点から片道徒歩45分圏内で絞り込む'), findsOneWidget);
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在地から片道徒歩45分圏内で絞り込む'), findsOneWidget);
+  });
+
+  testWidgets('recording is blocked until a base point exists', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = await _pumpHome(
+      tester,
+      withBase: false,
+      // Near the mock candidates, so the 45-minute filter keeps them.
+      locationService: StubLocationService(
+        const LocationResult.success(lat: 35.6890, lng: 139.6917),
+      ),
+    );
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    // Manual entry is gated too, not just the candidate tiles.
+    await tester.tap(find.widgetWithText(OutlinedButton, '手入力登録'));
+    await tester.pumpAndSettle();
+    expect(find.text(baseRequiredForRecordMessage), findsOneWidget);
+    expect(find.byType(RecordSheet), findsNothing);
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+    expect(controller.searchResults, isNotEmpty);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'この候補で記録').first);
+    await tester.pumpAndSettle();
+
+    // The sheet would only fail on save, so it must not open at all.
+    expect(find.byType(RecordSheet), findsNothing);
+    expect(find.text(baseRequiredForRecordMessage), findsOneWidget);
+  });
+
+  testWidgets('the deniedForever banner opens the OS settings page', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final location = StubLocationService(
+      const LocationResult.failed(LocationFailure.deniedForever),
+    );
+    await _pumpHome(tester, withBase: false, locationService: location);
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(describeLocationFailure(LocationFailure.deniedForever)),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '設定を開く'));
+    await tester.pumpAndSettle();
+
+    expect(location.settingsOpened, 1);
+  });
+
+  testWidgets(
+    'a location failure does not also claim the query found nothing',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(600, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await _pumpHome(
+        tester,
+        withBase: false,
+        locationService: StubLocationService(
+          const LocationResult.failed(LocationFailure.timeout),
+        ),
+      );
+
+      await tester.tap(find.text('登録'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).first, 'curry');
+      await tester.tap(find.widgetWithText(FilledButton, '検索'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('「curry」の店舗候補は見つかりませんでした。'), findsNothing);
+    },
+  );
+
+  testWidgets('candidate copy names the current location as the origin', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(
+      tester,
+      locationService: StubLocationService(
+        const LocationResult.success(lat: 35.6890, lng: 139.6917),
+      ),
+    );
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('現在地から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。'),
+      findsOneWidget,
+    );
+    expect(find.text('船のレーダーのように、現在地から見た方向と距離で候補を拾います。'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('OpenStreetMap ベースの地図で、現在地と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.text('OpenStreetMap ベースの地図で、現在地と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the help icon opens the usage guide', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(tester);
+
+    await tester.tap(find.byTooltip('使い方ガイド'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(UsageGuidePage), findsOneWidget);
+    expect(find.text('使い方ガイド'), findsOneWidget);
+    expect(find.text('ReachTrail でできること'), findsOneWidget);
   });
 }

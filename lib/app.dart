@@ -14,8 +14,11 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'models/base_location.dart';
 import 'models/dine_challenge_record.dart';
 import 'models/place.dart';
+import 'pages/usage_guide_page.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
+import 'services/location_service.dart';
+import 'services/map_handoff.dart';
 import 'services/persistence_service.dart';
 import 'services/place_search_service.dart';
 import 'utils/distance_calculator.dart';
@@ -402,19 +405,36 @@ String _newLocalId() {
   return '${DateTime.now().microsecondsSinceEpoch}-$random';
 }
 
+/// Which point a dine-place search is measured from.
+enum SearchOriginKind { base, current }
+
+/// Id given to the synthetic [BaseLocation] that wraps the device position, so
+/// the UI can tell a current-location origin from a saved base point.
+const String currentLocationOriginId = 'current-location';
+
+/// Shown instead of the record sheet when there is no base point yet.
+///
+/// A record's walking distance is measured from the base point, so saving one
+/// without a base can only fail; the gate says so before the form is filled in.
+const String baseRequiredForRecordMessage =
+    '先に「基準」タブで基準地点を登録してください。記録の徒歩距離は基準地点から計算します。';
+
 class ReachTrailController extends ChangeNotifier {
   ReachTrailController({
     required PersistenceService persistence,
     required LocalConfigService configService,
+    LocationService? locationService,
     String Function()? sessionTokenProvider,
     VoidCallback? onSessionExpired,
     VoidCallback? onNetworkSuccess,
   }) : _persistence = persistence,
        _configService = configService,
+       _locationService = locationService ?? GeolocatorLocationService(),
        _sessionTokenProvider = sessionTokenProvider,
        _onSessionExpired = onSessionExpired,
        _onNetworkSuccess = onNetworkSuccess;
 
+  final LocationService _locationService;
   final PersistenceService _persistence;
   final LocalConfigService _configService;
   final String Function()? _sessionTokenProvider;
@@ -429,6 +449,25 @@ class ReachTrailController extends ChangeNotifier {
   /// offer a re-sign-in instead of a dead end.
   bool sessionExpired = false;
   bool isSearching = false;
+
+  /// Set while a one-shot position lookup is running.
+  bool isLocating = false;
+
+  /// Calm explanation shown when the last lookup failed; null otherwise.
+  String? locationNotice;
+
+  /// True when the user has to flip the permission in OS settings.
+  bool locationNeedsSettings = false;
+
+  /// The point the most recent dine-place search was measured from. Null until
+  /// a search ran, or when the last search could not determine its origin.
+  ///
+  /// This may be a display-only pseudo [BaseLocation] with id
+  /// [currentLocationOriginId], built from the device position so the search
+  /// service and the candidate UI can measure from it. Such a value must never
+  /// be persisted, and must never be used as a record's base location: a
+  /// record's walking distance is always measured from the saved base point.
+  BaseLocation? lastSearchOrigin;
   bool isBaseSearching = false;
   bool isBuildingSearching = false;
   String? errorMessage;
@@ -537,6 +576,7 @@ class ReachTrailController extends ChangeNotifier {
     searchResults = const [];
     baseSearchResults = const [];
     buildingSearchResults = const [];
+    lastSearchOrigin = null;
     errorMessage = null;
     baseSearchError = null;
     buildingSearchError = null;
@@ -602,6 +642,10 @@ class ReachTrailController extends ChangeNotifier {
     );
     await _persistence.saveBaseLocation(location);
     baseLocation = location;
+    // Candidates found from the previous base would keep showing distances
+    // measured from a point that no longer exists.
+    lastSearchOrigin = null;
+    searchResults = const [];
     if (records.any((record) => record.baseLocationId == location.id)) {
       records = records
           .map(
@@ -635,6 +679,7 @@ class ReachTrailController extends ChangeNotifier {
     baseLocation = null;
     baseSearchResults = const [];
     searchResults = const [];
+    lastSearchOrigin = null;
     notifyListeners();
     return relatedRecordCount;
   }
@@ -662,7 +707,64 @@ class ReachTrailController extends ChangeNotifier {
     await _persistence.savePlaces(places);
   }
 
-  Future<void> searchPlaces(String query, {required bool nearbyOnly}) async {
+  /// One-shot position lookup. Returns null on failure and leaves the reason
+  /// in [locationNotice]; the UI decides where to show it.
+  Future<latlong.LatLng?> locateCurrentPosition() async {
+    if (isLocating) {
+      return null;
+    }
+    isLocating = true;
+    locationNotice = null;
+    locationNeedsSettings = false;
+    notifyListeners();
+    try {
+      final result = await _locationService.getCurrentPosition();
+      if (result.isSuccess) {
+        return latlong.LatLng(result.lat!, result.lng!);
+      }
+      locationNotice = describeLocationFailure(result.failure!);
+      locationNeedsSettings = result.failure == LocationFailure.deniedForever;
+      return null;
+    } finally {
+      isLocating = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> openLocationSettings() => _locationService.openAppSettings();
+
+  void clearLocationNotice() {
+    if (locationNotice == null) {
+      return;
+    }
+    locationNotice = null;
+    locationNeedsSettings = false;
+    notifyListeners();
+  }
+
+  Future<void> searchPlaces(
+    String query, {
+    required bool nearbyOnly,
+    SearchOriginKind origin = SearchOriginKind.base,
+  }) async {
+    BaseLocation? searchFrom = baseLocation;
+    if (origin == SearchOriginKind.current) {
+      final point = await locateCurrentPosition();
+      if (point == null) {
+        lastSearchOrigin = null;
+        searchResults = const [];
+        notifyListeners();
+        return;
+      }
+      // Wrapping the position as a BaseLocation lets the search service rank
+      // and filter from it without learning a second kind of origin.
+      searchFrom = BaseLocation(
+        id: currentLocationOriginId,
+        name: '現在地',
+        lat: point.latitude,
+        lng: point.longitude,
+      );
+    }
     isSearching = true;
     errorMessage = null;
     buildingSearchError = null;
@@ -673,9 +775,10 @@ class ReachTrailController extends ChangeNotifier {
       // so it is not repeated here as a red error.
       searchResults = await _requireSearchService().search(
         query: query,
-        baseLocation: baseLocation,
+        baseLocation: searchFrom,
         nearbyOnly: nearbyOnly,
       );
+      lastSearchOrigin = searchFrom;
       _onNetworkSuccess?.call();
     } catch (error) {
       errorMessage = describeSearchFailure(error);
@@ -1375,6 +1478,17 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                       ),
                     ),
                   ),
+                // Sits next to the account menu because both are "about the
+                // app" rather than about the current tab.
+                IconButton(
+                  tooltip: '使い方ガイド',
+                  icon: const Icon(Icons.help_outline),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) => const UsageGuidePage(),
+                    ),
+                  ),
+                ),
                 AccountMenuButton(
                   photoUrl: widget.authService.currentUser?.photoUrl,
                   displayName: widget.authService.currentUser?.displayName,
@@ -1532,6 +1646,9 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
   late final TextEditingController _memoController;
   final _formKey = GlobalKey<FormState>();
   final _addressFieldKey = GlobalKey();
+
+  /// Held here so "現在地を使う" can recentre the picker on the new point.
+  final MapController _pickerMapController = MapController();
   Place? _selectedCandidate;
   double? _selectedLat;
   double? _selectedLng;
@@ -1577,6 +1694,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     _entryFloorController.dispose();
     _elevatorRideCountController.dispose();
     _memoController.dispose();
+    _pickerMapController.dispose();
     super.dispose();
   }
 
@@ -1628,6 +1746,18 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                       icon: const Icon(Icons.edit_location_alt_outlined),
                       label: const Text('住所を手入力で使う'),
                     ),
+                    OutlinedButton.icon(
+                      onPressed: controller.isLocating
+                          ? null
+                          : () => unawaited(_useCurrentPositionAsBase()),
+                      icon: controller.isLocating
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.my_location),
+                      label: const Text('現在地を使う'),
+                    ),
                   ],
                 ),
                 if (controller.baseSearchError != null)
@@ -1636,6 +1766,18 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                     ),
+                  ),
+                if (controller.locationNotice case final notice?)
+                  _NoticeBanner(
+                    message: notice,
+                    icon: Icons.location_off_outlined,
+                    action: controller.locationNeedsSettings
+                        ? OutlinedButton(
+                            onPressed: () =>
+                                unawaited(controller.openLocationSettings()),
+                            child: const Text('設定を開く'),
+                          )
+                        : null,
                   ),
                 if (controller.baseSearchResults.isNotEmpty)
                   Align(
@@ -1671,6 +1813,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                   lat: _selectedLat,
                   lng: _selectedLng,
                   onSelected: _selectBasePoint,
+                  mapController: _pickerMapController,
                 ),
                 TextFormField(
                   controller: _floorController,
@@ -2007,6 +2150,24 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
     });
   }
 
+  /// Same path as a map tap, so the mismatch tag and save validation apply.
+  Future<void> _useCurrentPositionAsBase() async {
+    final controller = widget.controller;
+    final point = await controller.locateCurrentPosition();
+    if (!mounted || point == null) {
+      return;
+    }
+    _selectBasePoint(point);
+    try {
+      _pickerMapController.move(point, 16);
+    } catch (_) {
+      // The picker may not be attached yet; it opens on the point anyway.
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('現在地を基準地点の位置にしました。名前を入力して保存してください。')),
+    );
+  }
+
   /// A map tap wins over the candidate's coordinates but leaves its name and
   /// address in the form, so the two can disagree. Rather than silently saving
   /// the mismatch the form flags it, here and in the save confirmation.
@@ -2208,6 +2369,7 @@ class _BaseLocationPickerMap extends StatefulWidget {
     required this.lat,
     required this.lng,
     required this.onSelected,
+    this.mapController,
     this.title = '地図で基準地点を選択',
     this.description = '住所候補がうまく出ない場合は、地図をタップして緯度経度を設定できます。',
     this.markerLabel = '基準地点',
@@ -2219,6 +2381,10 @@ class _BaseLocationPickerMap extends StatefulWidget {
   final double? lat;
   final double? lng;
   final ValueChanged<latlong.LatLng> onSelected;
+
+  /// Supplied when the parent needs to recentre the map itself (the base tab
+  /// moves it onto the device position). The map owns one otherwise.
+  final MapController? mapController;
   final String title;
   final String description;
   final String markerLabel;
@@ -2234,11 +2400,14 @@ class _BaseLocationPickerMap extends StatefulWidget {
 }
 
 class _BaseLocationPickerMapState extends State<_BaseLocationPickerMap> {
-  final MapController _mapController = MapController();
+  MapController? _ownedController;
+
+  MapController get _mapController =>
+      widget.mapController ?? (_ownedController ??= MapController());
 
   @override
   void dispose() {
-    _mapController.dispose();
+    _ownedController?.dispose();
     super.dispose();
   }
 
@@ -2360,6 +2529,10 @@ class _RegisterTabState extends State<_RegisterTab> {
   final _buildingSearchController = TextEditingController();
   final _mapController = MapController();
   bool _nearbyOnly = true;
+
+  /// Which point the next search measures from. Forced to `current` while no
+  /// base point exists, so the tab still works before the base is set.
+  SearchOriginKind _origin = SearchOriginKind.base;
   bool _showDebugInfo = false;
   bool _showAllCandidates = false;
 
@@ -2401,10 +2574,34 @@ class _RegisterTabState extends State<_RegisterTab> {
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => _runSearch(),
               ),
+              SegmentedButton<SearchOriginKind>(
+                segments: [
+                  ButtonSegment(
+                    value: SearchOriginKind.base,
+                    icon: const Icon(Icons.home_work_outlined),
+                    label: const Text('基準地点'),
+                    enabled: base != null,
+                  ),
+                  const ButtonSegment(
+                    value: SearchOriginKind.current,
+                    icon: Icon(Icons.my_location),
+                    label: Text('現在地'),
+                  ),
+                ],
+                selected: {base == null ? SearchOriginKind.current : _origin},
+                onSelectionChanged: (selection) {
+                  setState(() => _origin = selection.first);
+                  controller.clearLocationNotice();
+                },
+              ),
               SwitchListTile(
-                title: const Text('基準地点から片道徒歩45分圏内で絞り込む'),
+                title: Text(
+                  '${_effectiveOrigin == SearchOriginKind.current ? '現在地' : '基準地点'}'
+                  'から片道徒歩45分圏内で絞り込む',
+                ),
                 value: _nearbyOnly,
-                onChanged: base == null
+                onChanged:
+                    (base == null && _effectiveOrigin == SearchOriginKind.base)
                     ? null
                     : (value) => setState(() => _nearbyOnly = value),
               ),
@@ -2412,9 +2609,14 @@ class _RegisterTabState extends State<_RegisterTab> {
                 children: [
                   Expanded(
                     child: FilledButton(
-                      // Searching without a base location cannot rank or filter
-                      // anything, so the action is disabled rather than failing.
-                      onPressed: controller.isSearching || base == null
+                      // Without a base point only a current-location search can
+                      // rank or filter anything, and `_effectiveOrigin` already
+                      // forces that, so the button stays usable.
+                      onPressed:
+                          controller.isSearching ||
+                              controller.isLocating ||
+                              (base == null &&
+                                  _effectiveOrigin == SearchOriginKind.base)
                           ? null
                           : _runSearch,
                       child: controller.isSearching
@@ -2451,7 +2653,7 @@ class _RegisterTabState extends State<_RegisterTab> {
               // Not an error: the user simply has not set a base yet.
               if (base == null)
                 Text(
-                  '「基準」タブで基準地点を登録すると検索できます。',
+                  '「基準」タブで基準地点を登録すると、基準地点からの検索と記録ができます。現在地からの検索は今でも使えます。',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               if (widget.searchUnavailableReason case final reason?)
@@ -2464,6 +2666,18 @@ class _RegisterTabState extends State<_RegisterTab> {
                     onPressed: widget.onReauthenticate,
                     child: const Text('再サインイン'),
                   ),
+                ),
+              if (controller.locationNotice case final notice?)
+                _NoticeBanner(
+                  message: notice,
+                  icon: Icons.location_off_outlined,
+                  action: controller.locationNeedsSettings
+                      ? OutlinedButton(
+                          onPressed: () =>
+                              unawaited(controller.openLocationSettings()),
+                          child: const Text('設定を開く'),
+                        )
+                      : null,
                 ),
               if (controller.configErrorMessage != null)
                 Text(
@@ -2481,7 +2695,8 @@ class _RegisterTabState extends State<_RegisterTab> {
         const SizedBox(height: 16),
         _SectionCard(
           title: '候補',
-          subtitle: '基準地点から円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
+          subtitle:
+              '$_originLabelから円形半径で候補を絞り込みます。建物名と階数ラベルを確認し、必要なら補正してから記録します。',
           child: controller.searchResults.isEmpty
               ? _EmptyCandidateState(
                   searchedQuery: _lastSearchQuery,
@@ -2502,7 +2717,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                     for (final place in _visibleCandidates)
                       _PlaceResultTile(
                         place: place,
-                        baseLocation: controller.baseLocation,
+                        baseLocation: controller.lastSearchOrigin ?? base,
                         showDebugInfo: kDebugMode && _showDebugInfo,
                         isSelected: _selectedPlaceId == place.id,
                         recordedCount: controller.recordCountForPlace(place.id),
@@ -2533,11 +2748,12 @@ class _RegisterTabState extends State<_RegisterTab> {
           const SizedBox(height: 16),
           _SectionCard(
             title: 'レーダー',
-            subtitle: '船のレーダーのように、基準地点から見た方向と距離で候補を拾います。',
+            subtitle: '船のレーダーのように、$_originLabelから見た方向と距離で候補を拾います。',
             child: SizedBox(
               height: 360,
               child: _CandidateRadar(
-                baseLocation: base,
+                baseLocation: controller.lastSearchOrigin ?? base,
+                originLabel: _originLabel,
                 places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
@@ -2548,12 +2764,12 @@ class _RegisterTabState extends State<_RegisterTab> {
           _SectionCard(
             title: '候補地図',
             subtitle:
-                'OpenStreetMap ベースの地図で、基準地点と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
+                'OpenStreetMap ベースの地図で、$_originLabelと候補位置を直感的に比較できます。地図表示は今後も拡張予定です。',
             child: SizedBox(
               height: 320,
               child: _CandidateMap(
                 mapController: _mapController,
-                baseLocation: base,
+                baseLocation: controller.lastSearchOrigin ?? base,
                 places: _visibleCandidates,
                 selectedPlaceId: _selectedPlaceId,
                 onSelectPlace: _selectPlace,
@@ -2564,6 +2780,20 @@ class _RegisterTabState extends State<_RegisterTab> {
       ],
     );
   }
+
+  /// How to name the point the visible candidates were measured from, so the
+  /// copy does not say 基準地点 next to distances taken from the device.
+  String get _originLabel =>
+      widget.controller.lastSearchOrigin?.id == currentLocationOriginId
+      ? '現在地'
+      : '基準地点';
+
+  /// The origin actually used: the segment's choice, except that without a
+  /// base point only the current location can serve as one.
+  SearchOriginKind get _effectiveOrigin =>
+      widget.controller.baseLocation == null
+      ? SearchOriginKind.current
+      : _origin;
 
   /// The candidates actually rendered: the first few, or all of them once the
   /// user has asked for the rest.
@@ -2585,8 +2815,20 @@ class _RegisterTabState extends State<_RegisterTab> {
       // A new search starts collapsed again.
       _showAllCandidates = false;
     });
-    await widget.controller.searchPlaces(query, nearbyOnly: _nearbyOnly);
+    await widget.controller.searchPlaces(
+      query,
+      nearbyOnly: _nearbyOnly,
+      origin: _effectiveOrigin,
+    );
     if (!mounted) {
+      return;
+    }
+    // When the origin lookup failed the search never ran, so the candidate
+    // panel must stay in its neutral state instead of claiming that this
+    // query found nothing right next to the location banner.
+    if (widget.controller.lastSearchOrigin == null &&
+        widget.controller.locationNotice != null) {
+      setState(() => _lastSearchQuery = null);
       return;
     }
     final results = widget.controller.searchResults;
@@ -2604,6 +2846,15 @@ class _RegisterTabState extends State<_RegisterTab> {
   }
 
   Future<void> _openRecordSheet(BuildContext context, {Place? place}) async {
+    // A current-location search can produce candidates before any base point
+    // exists, but the record itself still needs one, so stop here rather than
+    // letting the sheet fail on save.
+    if (widget.controller.baseLocation == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(baseRequiredForRecordMessage)),
+      );
+      return;
+    }
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -2719,6 +2970,46 @@ class _NoticeBanner extends StatelessWidget {
   }
 }
 
+/// Hands the destination to the device's maps app; the OS picks which one.
+class _OpenInMapsButton extends StatelessWidget {
+  const _OpenInMapsButton({required this.place, this.compact = false});
+
+  final Place place;
+
+  /// Icon-only, for rows that have no space for a labelled button.
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    Future<void> open() async {
+      final messenger = ScaffoldMessenger.of(context);
+      final ok = await openInMapsApp(
+        lat: place.lat,
+        lng: place.lng,
+        label: place.name,
+      );
+      if (!ok) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('地図アプリを開けませんでした。')),
+        );
+      }
+    }
+
+    if (compact) {
+      return IconButton(
+        tooltip: '地図アプリで開く',
+        icon: const Icon(Icons.directions_outlined),
+        onPressed: () => unawaited(open()),
+      );
+    }
+    return OutlinedButton.icon(
+      onPressed: () => unawaited(open()),
+      icon: const Icon(Icons.directions_outlined),
+      label: const Text('地図アプリで開く'),
+    );
+  }
+}
+
 class _PlaceResultTile extends StatelessWidget {
   const _PlaceResultTile({
     required this.place,
@@ -2798,33 +3089,38 @@ class _PlaceResultTile extends StatelessWidget {
                       place.category != baseLocationCategoryMarker)
                     _Tag(label: place.category),
                   if (distance != null)
-                    _Tag(label: '基準地点から ${formatMeters(distance)}'),
+                    _Tag(
+                      label:
+                          '${baseLocation!.id == currentLocationOriginId ? '現在地' : '基準地点'}'
+                          'から ${formatMeters(distance)}',
+                    ),
                 ],
               ),
               if (showDebugInfo && place.provider == 'yahoo')
                 _YahooDebugSummary(place: place),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    if (showDebugInfo && place.provider == 'yahoo')
-                      OutlinedButton.icon(
-                        onPressed: () => _openDebugSheet(context),
-                        icon: const Icon(Icons.bug_report_outlined),
-                        label: const Text('デバッグ'),
-                      ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF0F766E),
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: onUse,
-                      child: const Text('この候補で記録'),
+              // A Wrap, not a Row: at a large text scale the three actions no
+              // longer fit on one line on a narrow phone.
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (showDebugInfo && place.provider == 'yahoo')
+                    OutlinedButton.icon(
+                      onPressed: () => _openDebugSheet(context),
+                      icon: const Icon(Icons.bug_report_outlined),
+                      label: const Text('デバッグ'),
                     ),
-                  ],
-                ),
+                  _OpenInMapsButton(place: place),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF0F766E),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: onUse,
+                    child: const Text('この候補で記録'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -3003,9 +3299,14 @@ class _CandidateRadar extends StatelessWidget {
     required this.places,
     required this.selectedPlaceId,
     required this.onSelectPlace,
+    this.originLabel = '基準地点',
   });
 
   final BaseLocation? baseLocation;
+
+  /// What the sweep is centred on, so the empty state can name the right
+  /// point even when the origin was the device position.
+  final String originLabel;
   final List<Place> places;
   final String? selectedPlaceId;
   final ValueChanged<Place> onSelectPlace;
@@ -3013,7 +3314,7 @@ class _CandidateRadar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (baseLocation == null || places.isEmpty) {
-      return const Center(child: Text('基準地点と候補があるとレーダー形式で表示されます。'));
+      return Center(child: Text('$originLabelと候補があるとレーダー形式で表示されます。'));
     }
 
     final selectedPlace = places
@@ -3143,7 +3444,12 @@ class _CandidateRadar extends StatelessWidget {
               spacing: 10,
               runSpacing: 10,
               children: [
-                _RadarLegend(label: '基準', color: const Color(0xFF0F766E)),
+                _RadarLegend(
+                  label: baseLocation?.id == currentLocationOriginId
+                      ? '現在地'
+                      : '基準',
+                  color: const Color(0xFF0F766E),
+                ),
                 _RadarLegend(label: '候補', color: const Color(0xFF16A34A)),
                 _RadarLegend(label: '選択中', color: const Color(0xFFEA580C)),
               ],
@@ -3545,9 +3851,11 @@ class _CandidateMap extends StatelessWidget {
                     point: latlong.LatLng(baseLocation!.lat, baseLocation!.lng),
                     width: 120,
                     height: 56,
-                    child: const _MapMarker(
-                      label: '基準地点',
-                      color: Color(0xFF1D4ED8),
+                    child: _MapMarker(
+                      label: baseLocation!.id == currentLocationOriginId
+                          ? '現在地'
+                          : '基準地点',
+                      color: const Color(0xFF1D4ED8),
                       isSelected: false,
                     ),
                   ),
@@ -5399,6 +5707,7 @@ class _SharedPlaceRankTile extends StatelessWidget {
                   ],
                 ),
               ),
+              _OpenInMapsButton(place: entry.place, compact: true),
               const Icon(Icons.chevron_right),
             ],
           ),

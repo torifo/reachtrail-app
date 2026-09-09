@@ -8,6 +8,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Reachtrail App</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>現在地を基準地点の候補と店検索の起点として使うためです。バックグラウンドでは使いません。</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

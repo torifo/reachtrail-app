@@ -5,11 +5,14 @@ import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/place.dart';
 import 'package:reachtrail_app/services/local_config_service.dart';
+import 'package:reachtrail_app/services/location_service.dart';
 import 'package:reachtrail_app/services/persistence_service.dart';
 import 'package:reachtrail_app/services/place_search_service.dart';
 import 'package:reachtrail_app/services/session_cache_service.dart';
 import 'package:reachtrail_app/utils/score_calculator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/stub_location_service.dart';
 
 const _config = LocalConfig(
   placeSearchProvider: 'mock',
@@ -507,6 +510,152 @@ void main() {
         RecordCardHeader.formatVisitedDate(DateTime(2026, 12, 25, 18, 40)),
         '2026/12/25 18:40',
       );
+    });
+  });
+
+  group('current location', () {
+    test(
+      'a successful lookup returns coordinates and clears the notice',
+      () async {
+        final location = StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        );
+        final controller = ReachTrailController(
+          persistence: PersistenceService(),
+          configService: _StubConfigService(),
+          locationService: location,
+        );
+        await controller.load();
+
+        final result = await controller.locateCurrentPosition();
+
+        expect(result?.latitude, 35.0);
+        expect(result?.longitude, 135.0);
+        expect(controller.locationNotice, isNull);
+        expect(controller.isLocating, isFalse);
+      },
+    );
+
+    test('a failed lookup sets a notice and returns null', () async {
+      final location = StubLocationService(
+        const LocationResult.failed(LocationFailure.deniedForever),
+      );
+      final controller = ReachTrailController(
+        persistence: PersistenceService(),
+        configService: _StubConfigService(),
+        locationService: location,
+      );
+      await controller.load();
+
+      final result = await controller.locateCurrentPosition();
+
+      expect(result, isNull);
+      expect(
+        controller.locationNotice,
+        describeLocationFailure(LocationFailure.deniedForever),
+      );
+      expect(controller.locationNeedsSettings, isTrue);
+    });
+
+    test(
+      'searching from the current location does not run when lookup fails',
+      () async {
+        final location = StubLocationService(
+          const LocationResult.failed(LocationFailure.timeout),
+        );
+        final controller = ReachTrailController(
+          persistence: PersistenceService(),
+          configService: _StubConfigService(),
+          locationService: location,
+        );
+        await controller.load();
+
+        await controller.searchPlaces(
+          'curry',
+          nearbyOnly: true,
+          origin: SearchOriginKind.current,
+        );
+
+        expect(controller.locationNotice, isNotNull);
+        expect(controller.searchResults, isEmpty);
+        expect(controller.lastSearchOrigin, isNull);
+      },
+    );
+
+    test('saving a new base point drops the stale search origin', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+      expect(controller.lastSearchOrigin, isNotNull);
+      expect(controller.searchResults, isNotEmpty);
+
+      await controller.saveBaseLocation(
+        name: 'New Office',
+        lat: 34.0,
+        lng: 135.5,
+        floorLabel: '2F',
+        floorNumber: 2,
+        entryFloorLabel: '1F',
+        entryFloorNumber: 1,
+        hasElevator: false,
+        elevatorRideCount: null,
+        memo: '',
+      );
+
+      // Old tiles would otherwise keep measuring from the previous base.
+      expect(controller.lastSearchOrigin, isNull);
+      expect(controller.searchResults, isEmpty);
+    });
+
+    test('deleting the base point drops the stale search origin', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+      expect(controller.lastSearchOrigin, isNotNull);
+
+      await controller.deleteBaseLocation();
+
+      expect(controller.lastSearchOrigin, isNull);
+    });
+
+    test('searching from the current location records the origin', () async {
+      final location = StubLocationService(
+        const LocationResult.success(lat: 35.0, lng: 135.0),
+      );
+      final controller = ReachTrailController(
+        persistence: PersistenceService(),
+        configService: _StubConfigService(),
+        locationService: location,
+      );
+      await controller.load();
+
+      await controller.searchPlaces(
+        'curry',
+        nearbyOnly: false,
+        origin: SearchOriginKind.current,
+      );
+
+      expect(controller.lastSearchOrigin?.id, currentLocationOriginId);
+      expect(controller.lastSearchOrigin?.lat, 35.0);
+      expect(controller.lastSearchOrigin?.name, '現在地');
     });
   });
 }

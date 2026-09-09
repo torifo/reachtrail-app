@@ -8,9 +8,12 @@ import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/place.dart';
 import 'package:reachtrail_app/services/local_config_service.dart';
+import 'package:reachtrail_app/services/location_service.dart';
 import 'package:reachtrail_app/services/persistence_service.dart';
 import 'package:reachtrail_app/utils/score_calculator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/stub_location_service.dart';
 
 const _config = LocalConfig(
   placeSearchProvider: 'mock',
@@ -73,6 +76,10 @@ Future<ReachTrailController> _controllerWith(
   final controller = ReachTrailController(
     persistence: persistence,
     configService: _StubConfigService(),
+    // No platform channel for geolocator under `flutter test`.
+    locationService: StubLocationService(
+      const LocationResult.success(lat: 35, lng: 135),
+    ),
   );
   await controller.load();
   return controller;
