@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
 enum LocationFailure {
@@ -75,12 +76,7 @@ class GeolocatorLocationService implements LocationService {
         case LocationPermission.always:
           break;
       }
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: timeout,
-        ),
-      );
+      final position = await _resolvePosition(timeout);
       return LocationResult.success(
         lat: position.latitude,
         lng: position.longitude,
@@ -91,6 +87,41 @@ class GeolocatorLocationService implements LocationService {
       return const LocationResult.failed(LocationFailure.unknown);
     }
   }
+
+  /// On Android the fused provider (Play services) can refuse a request when
+  /// the user declines Google's "Location Accuracy" prompt; the platform
+  /// LocationManager still works with plain GPS, so it is the fallback.
+  Future<Position> _resolvePosition(Duration timeout) async {
+    if (!_isAndroid) {
+      return Geolocator.getCurrentPosition(
+        locationSettings: LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+        ),
+      );
+    }
+    try {
+      return await Geolocator.getCurrentPosition(
+        locationSettings: AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+        ),
+      );
+    } on TimeoutException {
+      rethrow;
+    } catch (_) {
+      return Geolocator.getCurrentPosition(
+        locationSettings: AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: timeout,
+          forceLocationManager: true,
+        ),
+      );
+    }
+  }
+
+  bool get _isAndroid =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   @override
   Future<void> openAppSettings() => Geolocator.openAppSettings();
