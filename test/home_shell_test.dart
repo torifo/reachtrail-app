@@ -58,34 +58,40 @@ DineChallengeRecord _record() => DineChallengeRecord(
 
 /// Boots the real shell so the tab, its dialogs and its SnackBars are wired
 /// together exactly as they are in the app.
-Future<ReachTrailController> _pumpHome(WidgetTester tester) async {
+Future<ReachTrailController> _pumpHome(
+  WidgetTester tester, {
+  bool withBase = true,
+  LocationService? locationService,
+}) async {
   final persistence = PersistenceService();
-  await persistence.saveBaseLocation(
-    BaseLocation(
-      id: 'base-1',
-      name: 'Office',
-      lat: 35.6812,
-      lng: 139.7671,
-      floorLabel: '10F',
-      floorNumber: 10,
-      entryFloorLabel: '1F',
-      entryFloorNumber: 1,
-      hasElevator: true,
-      elevatorRideCount: 1,
-      memo: '',
-    ),
-  );
-  await persistence.savePlaces([_place]);
-  await persistence.saveRecords([_record()]);
+  if (withBase) {
+    await persistence.saveBaseLocation(
+      BaseLocation(
+        id: 'base-1',
+        name: 'Office',
+        lat: 35.6812,
+        lng: 139.7671,
+        floorLabel: '10F',
+        floorNumber: 10,
+        entryFloorLabel: '1F',
+        entryFloorNumber: 1,
+        hasElevator: true,
+        elevatorRideCount: 1,
+        memo: '',
+      ),
+    );
+    await persistence.savePlaces([_place]);
+    await persistence.saveRecords([_record()]);
+  }
 
   final controller = ReachTrailController(
     persistence: persistence,
     configService: _StubConfigService(),
     // The default geolocator service has no platform channel under `flutter
     // test`, so every controller built here takes a stub instead.
-    locationService: StubLocationService(
-      const LocationResult.success(lat: 35, lng: 135),
-    ),
+    locationService:
+        locationService ??
+        StubLocationService(const LocationResult.success(lat: 35, lng: 135)),
   );
   await controller.load();
   addTearDown(controller.dispose);
@@ -196,5 +202,73 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('現在地から片道徒歩45分圏内で絞り込む'), findsOneWidget);
+  });
+
+  testWidgets('recording is blocked until a base point exists', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = await _pumpHome(
+      tester,
+      withBase: false,
+      // Near the mock candidates, so the 45-minute filter keeps them.
+      locationService: StubLocationService(
+        const LocationResult.success(lat: 35.6890, lng: 139.6917),
+      ),
+    );
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    // Manual entry is gated too, not just the candidate tiles.
+    await tester.tap(find.widgetWithText(OutlinedButton, '手入力登録'));
+    await tester.pumpAndSettle();
+    expect(find.text(baseRequiredForRecordMessage), findsOneWidget);
+    expect(find.byType(RecordSheet), findsNothing);
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+    expect(controller.searchResults, isNotEmpty);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'この候補で記録').first);
+    await tester.pumpAndSettle();
+
+    // The sheet would only fail on save, so it must not open at all.
+    expect(find.byType(RecordSheet), findsNothing);
+    expect(find.text(baseRequiredForRecordMessage), findsOneWidget);
+  });
+
+  testWidgets('the deniedForever banner opens the OS settings page', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final location = StubLocationService(
+      const LocationResult.failed(LocationFailure.deniedForever),
+    );
+    await _pumpHome(tester, withBase: false, locationService: location);
+
+    await tester.tap(find.text('登録'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('現在地'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'curry');
+    await tester.tap(find.widgetWithText(FilledButton, '検索'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(describeLocationFailure(LocationFailure.deniedForever)),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '設定を開く'));
+    await tester.pumpAndSettle();
+
+    expect(location.settingsOpened, 1);
   });
 }

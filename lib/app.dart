@@ -411,6 +411,13 @@ enum SearchOriginKind { base, current }
 /// the UI can tell a current-location origin from a saved base point.
 const String currentLocationOriginId = 'current-location';
 
+/// Shown instead of the record sheet when there is no base point yet.
+///
+/// A record's walking distance is measured from the base point, so saving one
+/// without a base can only fail; the gate says so before the form is filled in.
+const String baseRequiredForRecordMessage =
+    '先に「基準」タブで基準地点を登録してください。記録の徒歩距離は基準地点から計算します。';
+
 class ReachTrailController extends ChangeNotifier {
   ReachTrailController({
     required PersistenceService persistence,
@@ -2581,7 +2588,8 @@ class _RegisterTabState extends State<_RegisterTab> {
                   'から片道徒歩45分圏内で絞り込む',
                 ),
                 value: _nearbyOnly,
-                onChanged: (base == null && _origin == SearchOriginKind.base)
+                onChanged:
+                    (base == null && _effectiveOrigin == SearchOriginKind.base)
                     ? null
                     : (value) => setState(() => _nearbyOnly = value),
               ),
@@ -2590,11 +2598,13 @@ class _RegisterTabState extends State<_RegisterTab> {
                   Expanded(
                     child: FilledButton(
                       // Without a base point only a current-location search can
-                      // rank or filter anything, so that is the one still open.
+                      // rank or filter anything, and `_effectiveOrigin` already
+                      // forces that, so the button stays usable.
                       onPressed:
                           controller.isSearching ||
                               controller.isLocating ||
-                              (base == null && _origin == SearchOriginKind.base)
+                              (base == null &&
+                                  _effectiveOrigin == SearchOriginKind.base)
                           ? null
                           : _runSearch,
                       child: controller.isSearching
@@ -2807,6 +2817,15 @@ class _RegisterTabState extends State<_RegisterTab> {
   }
 
   Future<void> _openRecordSheet(BuildContext context, {Place? place}) async {
+    // A current-location search can produce candidates before any base point
+    // exists, but the record itself still needs one, so stop here rather than
+    // letting the sheet fail on save.
+    if (widget.controller.baseLocation == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(baseRequiredForRecordMessage)),
+      );
+      return;
+    }
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
