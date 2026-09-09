@@ -4,6 +4,7 @@ import 'package:reachtrail_app/app.dart';
 import 'package:reachtrail_app/models/base_location.dart';
 import 'package:reachtrail_app/models/dine_challenge_record.dart';
 import 'package:reachtrail_app/models/place.dart';
+import 'package:reachtrail_app/pages/usage_guide_page.dart';
 import 'package:reachtrail_app/services/google_auth_service.dart';
 import 'package:reachtrail_app/services/local_config_service.dart';
 import 'package:reachtrail_app/services/location_service.dart';
@@ -339,5 +340,19 @@ void main() {
       find.text('OpenStreetMap ベースの地図で、現在地と候補位置を直感的に比較できます。地図表示は今後も拡張予定です。'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('the help icon opens the usage guide', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(600, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await _pumpHome(tester);
+
+    await tester.tap(find.byTooltip('使い方ガイド'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(UsageGuidePage), findsOneWidget);
+    expect(find.text('使い方ガイド'), findsOneWidget);
+    expect(find.text('ReachTrail でできること'), findsOneWidget);
   });
 }

@@ -14,6 +14,7 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'models/base_location.dart';
 import 'models/dine_challenge_record.dart';
 import 'models/place.dart';
+import 'pages/usage_guide_page.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
 import 'services/location_service.dart';
@@ -1477,6 +1478,17 @@ class _ReachTrailHomeState extends State<ReachTrailHome>
                       ),
                     ),
                   ),
+                // Sits next to the account menu because both are "about the
+                // app" rather than about the current tab.
+                IconButton(
+                  tooltip: '使い方ガイド',
+                  icon: const Icon(Icons.help_outline),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) => const UsageGuidePage(),
+                    ),
+                  ),
+                ),
                 AccountMenuButton(
                   photoUrl: widget.authService.currentUser?.photoUrl,
                   displayName: widget.authService.currentUser?.displayName,
