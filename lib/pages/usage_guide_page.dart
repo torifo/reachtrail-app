@@ -18,7 +18,13 @@ class UsageGuidePage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('使い方ガイド')),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        // Edge-to-edge: keep the last card clear of the system navigation bar.
+        padding: EdgeInsets.fromLTRB(
+          20,
+          20,
+          20,
+          20 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: const [
           _GuideCard(
             title: 'ReachTrail でできること',
