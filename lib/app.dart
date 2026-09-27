@@ -17,6 +17,7 @@ import 'models/place.dart';
 import 'pages/usage_guide_page.dart';
 import 'services/google_auth_service.dart';
 import 'services/local_config_service.dart';
+import 'services/local_place_search.dart';
 import 'services/location_service.dart';
 import 'services/map_handoff.dart';
 import 'services/persistence_service.dart';
@@ -684,19 +685,41 @@ class ReachTrailController extends ChangeNotifier {
     return relatedRecordCount;
   }
 
+  /// Provider places are only cached while a record points at them. Places
+  /// the user typed in are kept regardless, so they stay searchable after
+  /// their records are gone.
   List<Place> _removeUnusedPlaces(
     List<Place> sourcePlaces,
     List<DineChallengeRecord> sourceRecords,
   ) {
     final usedPlaceIds = sourceRecords.map((record) => record.placeId).toSet();
     return sourcePlaces
-        .where((place) => usedPlaceIds.contains(place.id))
+        .where(
+          (place) => isUserAddedPlace(place) || usedPlaceIds.contains(place.id),
+        )
         .toList();
+  }
+
+  /// Removes a user-added store that no record references any more.
+  Future<void> removeUserAddedPlace(String placeId) async {
+    final index = places.indexWhere((place) => place.id == placeId);
+    if (index < 0 || !isUserAddedPlace(places[index])) return;
+    if (records.any((record) => record.placeId == placeId)) return;
+    places = places.where((place) => place.id != placeId).toList();
+    searchResults = searchResults
+        .where((place) => place.id != placeId)
+        .toList();
+    await _persistence.savePlaces(places);
+    notifyListeners();
   }
 
   Future<void> _deleteUnusedPlace(String placeId) async {
     final stillUsed = records.any((record) => record.placeId == placeId);
     if (stillUsed) {
+      return;
+    }
+    final index = places.indexWhere((place) => place.id == placeId);
+    if (index >= 0 && isUserAddedPlace(places[index])) {
       return;
     }
     final nextPlaces = places.where((place) => place.id != placeId).toList();
@@ -770,20 +793,31 @@ class ReachTrailController extends ChangeNotifier {
     buildingSearchError = null;
     buildingSearchResults = const [];
     notifyListeners();
+    // Stores the user typed in themselves have no provider listing, so they
+    // are matched locally and lead the list; they stay findable even when the
+    // provider search fails.
+    final mine = matchUserAddedPlaces(
+      places: places,
+      query: query,
+      origin: searchFrom,
+      nearbyOnly: nearbyOnly,
+    );
     try {
       // The empty-result case is covered by the candidate panel's own guidance,
       // so it is not repeated here as a red error.
-      searchResults = await _requireSearchService().search(
+      final remote = await _requireSearchService().search(
         query: query,
         baseLocation: searchFrom,
         nearbyOnly: nearbyOnly,
       );
+      searchResults = mergeSearchResults(userAdded: mine, remote: remote);
       lastSearchOrigin = searchFrom;
       _onNetworkSuccess?.call();
     } catch (error) {
       errorMessage = describeSearchFailure(error);
       _noteSearchFailure(error);
-      searchResults = const [];
+      searchResults = mine;
+      lastSearchOrigin = mine.isEmpty ? null : searchFrom;
     } finally {
       isSearching = false;
       notifyListeners();
@@ -2343,7 +2377,7 @@ class _BaseCandidateTile extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _Tag(label: place.provider.toUpperCase()),
+                  _Tag(label: providerTagLabel(place)),
                   if (place.floorLabel.isNotEmpty)
                     _Tag(label: place.floorLabel),
                   if (place.category.isNotEmpty &&
@@ -2725,6 +2759,11 @@ class _RegisterTabState extends State<_RegisterTab> {
                         recordedCount: controller.recordCountForPlace(place.id),
                         onSelect: () => _selectPlace(place),
                         onUse: () => _openRecordSheet(context, place: place),
+                        onRemove:
+                            isUserAddedPlace(place) &&
+                                controller.recordCountForPlace(place.id) == 0
+                            ? () => unawaited(_confirmRemovePlace(place))
+                            : null,
                       ),
                     // A provider can return dozens of near-identical results;
                     // the first few are the ones worth reading, and the rest
@@ -2845,6 +2884,34 @@ class _RegisterTabState extends State<_RegisterTab> {
       return;
     }
     await widget.controller.searchBuildingCandidates(query);
+  }
+
+  /// Deleting a typed-in store is the only way to fix a typo, so it asks
+  /// first; stores with records never reach here.
+  Future<void> _confirmRemovePlace(Place place) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('候補から削除しますか？'),
+        content: Text('「${place.name}」を自分で追加した店から削除します。記録はありません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await widget.controller.removeUserAddedPlace(place.id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('候補から削除しました。')));
   }
 
   Future<void> _openRecordSheet(
@@ -3028,6 +3095,7 @@ class _PlaceResultTile extends StatelessWidget {
     required this.onSelect,
     required this.onUse,
     this.recordedCount = 0,
+    this.onRemove,
   });
 
   final Place place;
@@ -3035,6 +3103,10 @@ class _PlaceResultTile extends StatelessWidget {
   final bool showDebugInfo;
   final bool isSelected;
   final VoidCallback onSelect;
+
+  /// Set only for a user-added store with no records: lets a typo be
+  /// removed from future searches.
+  final VoidCallback? onRemove;
   final VoidCallback onUse;
 
   /// How many records this place already has.
@@ -3089,7 +3161,7 @@ class _PlaceResultTile extends StatelessWidget {
                   // First, because "have I been here already?" is the question
                   // the user is answering when they scan the list.
                   if (recordedCount > 0) _Tag(label: '登録済み・$recordedCount回'),
-                  _Tag(label: place.provider.toUpperCase()),
+                  _Tag(label: providerTagLabel(place)),
                   if (place.buildingName.isNotEmpty)
                     _Tag(label: place.buildingName),
                   if (place.floorLabel.isNotEmpty)
@@ -3119,6 +3191,12 @@ class _PlaceResultTile extends StatelessWidget {
                       onPressed: () => _openDebugSheet(context),
                       icon: const Icon(Icons.bug_report_outlined),
                       label: const Text('デバッグ'),
+                    ),
+                  if (onRemove != null)
+                    OutlinedButton.icon(
+                      onPressed: onRemove,
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('候補から削除'),
                     ),
                   _OpenInMapsButton(place: place),
                   FilledButton(
