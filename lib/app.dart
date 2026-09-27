@@ -2631,7 +2631,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => _openRecordSheet(context),
-                      child: const Text('店を手入力で登録'),
+                      child: const Text('店を直接登録'),
                     ),
                   ),
                 ],
