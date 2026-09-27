@@ -347,12 +347,13 @@ void main() {
 
       await controller.deleteRecord(saved.id);
       expect(controller.records, isEmpty);
-      expect(controller.places, isEmpty);
+      // A typed-in store outlives its records so it stays searchable.
+      expect(controller.places.single.id, 'place-1');
 
       await controller.restoreRecord(saved);
 
       expect(controller.records.single.id, saved.id);
-      // The place went with the record, so it has to come back with it.
+      // Restoring must not duplicate the place that was kept.
       expect(controller.places.single.id, 'place-1');
       expect(await persistence.loadRecords(), hasLength(1));
 
@@ -656,6 +657,86 @@ void main() {
       expect(controller.lastSearchOrigin?.id, currentLocationOriginId);
       expect(controller.lastSearchOrigin?.lat, 35.0);
       expect(controller.lastSearchOrigin?.name, '現在地');
+    });
+  });
+
+  group('user-added places', () {
+    Place manual(String id, String name, {double lat = 35.6812}) => Place(
+      id: id,
+      provider: 'manual',
+      providerPlaceId: id,
+      name: name,
+      lat: lat,
+      lng: 139.7671,
+      address: '',
+    );
+
+    test('lead the search results and survive record deletion', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      await persistence.savePlaces([manual('manual-1', 'curry stand 角')]);
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      // Loading prunes provider places without records; a typed-in store
+      // is not pruned.
+      expect(controller.places.map((p) => p.id), contains('manual-1'));
+
+      await controller.searchPlaces('curry', nearbyOnly: false);
+
+      expect(controller.searchResults.first.id, 'manual-1');
+      expect(controller.searchResults.length, greaterThan(1));
+    });
+
+    test('are still returned when the provider search fails', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      await persistence.savePlaces([manual('manual-1', 'curry stand')]);
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+      );
+      // `load()` never ran, so there is no search service: the remote
+      // search throws and only the local match remains.
+      await controller.searchPlaces('curry', nearbyOnly: false);
+
+      expect(controller.errorMessage, searchUnavailableMessage);
+      expect(controller.searchResults, isEmpty); // places not loaded yet
+
+      await controller.load();
+      controller.places; // loaded now
+      await controller.searchPlaces('curry', nearbyOnly: false);
+      expect(controller.searchResults.map((p) => p.id), contains('manual-1'));
+    });
+
+    test('can be removed once no record references them', () async {
+      final persistence = PersistenceService();
+      await persistence.saveBaseLocation(_base());
+      await persistence.savePlaces([manual('manual-1', 'curry stand')]);
+      final controller = ReachTrailController(
+        persistence: persistence,
+        configService: _StubConfigService(),
+        locationService: StubLocationService(
+          const LocationResult.success(lat: 35.0, lng: 135.0),
+        ),
+      );
+      await controller.load();
+
+      await controller.removeUserAddedPlace('manual-1');
+
+      expect(controller.places.any((p) => p.id == 'manual-1'), isFalse);
+      expect(
+        (await PersistenceService().loadPlaces()).any(
+          (p) => p.id == 'manual-1',
+        ),
+        isFalse,
+      );
     });
   });
 }

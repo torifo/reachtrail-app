@@ -142,7 +142,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.records, isEmpty);
-    expect(controller.places, isEmpty);
+    // A typed-in store is kept without records so it stays searchable.
+    expect(controller.places.single.id, _place.id);
     expect(find.text('記録を削除しました。'), findsOneWidget);
 
     await tester.tap(find.text('元に戻す'));
