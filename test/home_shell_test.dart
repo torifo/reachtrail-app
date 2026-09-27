@@ -224,7 +224,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Manual entry is gated too, not just the candidate tiles.
-    await tester.tap(find.widgetWithText(OutlinedButton, '手入力登録'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '店を直接登録'));
     await tester.pumpAndSettle();
     expect(find.text(baseRequiredForRecordMessage), findsOneWidget);
     expect(find.byType(RecordSheet), findsNothing);

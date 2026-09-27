@@ -90,6 +90,7 @@ Future<void> _pumpSheet(
   required ReachTrailController controller,
   Place? initialPlace,
   DineChallengeRecord? existingRecord,
+  String? initialName,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -101,6 +102,7 @@ Future<void> _pumpSheet(
           controller: controller,
           initialPlace: initialPlace,
           existingRecord: existingRecord,
+          initialName: initialName,
         ),
       ),
     ),
@@ -351,5 +353,84 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('入力内容を破棄しますか？'), findsNothing);
+  });
+
+  testWidgets('a searched name that Yahoo did not know is pre-filled', (
+    tester,
+  ) async {
+    final controller = await _controllerWith(const []);
+    await _pumpSheet(tester, controller: controller, initialName: '角の定食屋');
+
+    expect(find.widgetWithText(TextFormField, '角の定食屋'), findsOneWidget);
+  });
+
+  testWidgets('the device position becomes the store position', (tester) async {
+    final controller = await _controllerWith(const []);
+    await _pumpSheet(tester, controller: controller);
+
+    expect(
+      find.textContaining('位置が未設定です', skipOffstage: false),
+      findsOneWidget,
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('現在地を店の位置にする'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('現在地を店の位置にする'));
+    await tester.pumpAndSettle();
+
+    // The stub reports 35, 135; both coordinate fields pick it up.
+    expect(
+      find.textContaining('選択座標: 35.000000, 135.000000', skipOffstage: false),
+      findsOneWidget,
+    );
+    expect(find.text('現在地を店の位置にしました。'), findsOneWidget);
+  });
+
+  testWidgets('a failed position lookup explains itself and keeps the form', (
+    tester,
+  ) async {
+    final persistence = PersistenceService();
+    await persistence.saveBaseLocation(
+      BaseLocation(
+        id: 'base-1',
+        name: 'Office',
+        lat: 35.6812,
+        lng: 139.7671,
+        floorLabel: '',
+        floorNumber: null,
+        entryFloorLabel: '',
+        entryFloorNumber: null,
+        hasElevator: true,
+        elevatorRideCount: null,
+        memo: '',
+      ),
+    );
+    final controller = ReachTrailController(
+      persistence: persistence,
+      configService: _StubConfigService(),
+      locationService: StubLocationService(
+        const LocationResult.failed(LocationFailure.deniedForever),
+      ),
+    );
+    await controller.load();
+    await _pumpSheet(tester, controller: controller);
+
+    await tester.scrollUntilVisible(
+      find.text('現在地を店の位置にする'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('現在地を店の位置にする'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('位置情報の利用が許可されていません'), findsOneWidget);
+    expect(find.text('設定を開く'), findsOneWidget);
+    expect(
+      find.textContaining('位置が未設定です', skipOffstage: false),
+      findsOneWidget,
+    );
   });
 }
