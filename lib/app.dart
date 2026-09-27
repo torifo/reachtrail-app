@@ -2631,7 +2631,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => _openRecordSheet(context),
-                      child: const Text('手入力登録'),
+                      child: const Text('店を手入力で登録'),
                     ),
                   ),
                 ],
@@ -2710,6 +2710,8 @@ class _RegisterTabState extends State<_RegisterTab> {
                     context,
                     place: _buildPlaceFromBuildingCandidate(candidate),
                   ),
+                  onRegisterManually: (name) =>
+                      _openRecordSheet(context, initialName: name),
                 )
               : Column(
                   spacing: 12,
@@ -2845,7 +2847,11 @@ class _RegisterTabState extends State<_RegisterTab> {
     await widget.controller.searchBuildingCandidates(query);
   }
 
-  Future<void> _openRecordSheet(BuildContext context, {Place? place}) async {
+  Future<void> _openRecordSheet(
+    BuildContext context, {
+    Place? place,
+    String? initialName,
+  }) async {
     // A current-location search can produce candidates before any base point
     // exists, but the record itself still needs one, so stop here rather than
     // letting the sheet fail on save.
@@ -2864,8 +2870,11 @@ class _RegisterTabState extends State<_RegisterTab> {
       // Dragging the sheet away would skip the unsaved-changes confirmation,
       // which the close button and the back gesture both honour.
       enableDrag: false,
-      builder: (context) =>
-          RecordSheet(controller: widget.controller, initialPlace: place),
+      builder: (context) => RecordSheet(
+        controller: widget.controller,
+        initialPlace: place,
+        initialName: initialName,
+      ),
     );
     if (saved == true && context.mounted) {
       ScaffoldMessenger.of(
@@ -3154,6 +3163,7 @@ class _EmptyCandidateState extends StatelessWidget {
     required this.buildingSearchResults,
     required this.onSearchBuilding,
     required this.onUseBuildingCandidate,
+    required this.onRegisterManually,
   });
 
   final String? searchedQuery;
@@ -3164,6 +3174,9 @@ class _EmptyCandidateState extends StatelessWidget {
   final List<Place> buildingSearchResults;
   final VoidCallback onSearchBuilding;
   final ValueChanged<Place> onUseBuildingCandidate;
+
+  /// Opens the record sheet with the searched name filled in.
+  final ValueChanged<String> onRegisterManually;
 
   @override
   Widget build(BuildContext context) {
@@ -3177,7 +3190,22 @@ class _EmptyCandidateState extends StatelessWidget {
       spacing: 12,
       children: [
         Text('「$query」の店舗候補は見つかりませんでした。'),
-        const Text('Yahoo に店舗掲載がない場合は、建物名と階数を使って記録できます。建物名か住所で候補を探してください。'),
+        const Text(
+          'お店にいるなら、店名をそのまま使って現在地で登録するのが早いです。'
+          '建物名と階数から探すこともできます。',
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => onRegisterManually(query),
+            icon: const Icon(Icons.add_location_alt_outlined),
+            label: Text('「$query」を手入力で登録'),
+          ),
+        ),
         if (baseLocation != null)
           Text(
             '基準地点: ${baseLocation!.name}',
@@ -4212,11 +4240,16 @@ class RecordSheet extends StatefulWidget {
     required this.controller,
     this.initialPlace,
     this.existingRecord,
+    this.initialName,
   });
 
   final ReachTrailController controller;
   final Place? initialPlace;
   final DineChallengeRecord? existingRecord;
+
+  /// Pre-fills the store name when the sheet opens for a place Yahoo did
+  /// not know (the user typed it into the search box first).
+  final String? initialName;
 
   @override
   State<RecordSheet> createState() => _RecordSheetState();
@@ -4268,6 +4301,10 @@ class _RecordSheetState extends State<RecordSheet> {
   /// stay collapsed for the rare case that needs them.
   bool _showRawCoordinates = false;
 
+  /// Owned here so "use my location" can recentre the store picker map.
+  final MapController _placeMapController = MapController();
+  bool _isLocatingStore = false;
+
   @override
   void initState() {
     super.initState();
@@ -4280,7 +4317,7 @@ class _RecordSheetState extends State<RecordSheet> {
     _nameController = TextEditingController(
       text: isPlaceholder && place!.name == placeholderPlaceName
           ? ''
-          : place?.name ?? '',
+          : place?.name ?? widget.initialName ?? '',
     );
     _addressController = TextEditingController(text: place?.address ?? '');
     _buildingController = TextEditingController(
@@ -4410,6 +4447,7 @@ class _RecordSheetState extends State<RecordSheet> {
     _elevatorRideCountController.dispose();
     _latController.dispose();
     _lngController.dispose();
+    _placeMapController.dispose();
     _routeDistanceController.dispose();
     _categoryController.dispose();
     _menuController.dispose();
@@ -4733,10 +4771,26 @@ class _RecordSheetState extends State<RecordSheet> {
             keyboardType: TextInputType.number,
             decoration: _fieldDecoration('エレベータ乗車回数', hintText: '例: 1, 2'),
           ),
-        // The primary way to give a manual record its position. Typing raw
-        // latitude and longitude was the only way before, which made manual
-        // registration effectively unusable on a phone.
+        // Most manual records are made standing in the store, so the device
+        // position is the fastest way to place it; the map tap stays as the
+        // fallback for records made later.
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            onPressed: _isLocatingStore
+                ? null
+                : () => unawaited(_useCurrentPositionForStore()),
+            icon: _isLocatingStore
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.my_location),
+            label: const Text('現在地を店の位置にする'),
+          ),
+        ),
         _BaseLocationPickerMap(
+          mapController: _placeMapController,
           lat: double.tryParse(_latController.text.trim()),
           lng: double.tryParse(_lngController.text.trim()),
           onSelected: _selectPlacePoint,
@@ -4822,6 +4876,42 @@ class _RecordSheetState extends State<RecordSheet> {
     // The controllers' own listeners already refresh the required-field state
     // and the dirty flag; this rebuild is for the map's marker.
     setState(() {});
+  }
+
+  /// One-shot device position as the store position. Failures surface the
+  /// same calm notice the base tab uses, in a SnackBar since the sheet has
+  /// no banner slot.
+  Future<void> _useCurrentPositionForStore() async {
+    setState(() => _isLocatingStore = true);
+    final point = await widget.controller.locateCurrentPosition();
+    if (!mounted) return;
+    setState(() => _isLocatingStore = false);
+    if (point == null) {
+      final notice = widget.controller.locationNotice;
+      if (notice != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(notice),
+            action: widget.controller.locationNeedsSettings
+                ? SnackBarAction(
+                    label: '設定を開く',
+                    onPressed: () =>
+                        unawaited(widget.controller.openLocationSettings()),
+                  )
+                : null,
+          ),
+        );
+      }
+      return;
+    }
+    _selectPlacePoint(point);
+    // The map may not be attached yet; the coordinates are already applied.
+    try {
+      _placeMapController.move(point, 17);
+    } catch (_) {}
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('現在地を店の位置にしました。')));
   }
 
   Widget _buildVisitDetailsFields() {
