@@ -18,6 +18,9 @@
       --warn: #b45309;
     }
 
+    .ident { border-collapse: collapse; margin: 12px 0 20px; font-size: 0.95em; }
+    .ident th, .ident td { text-align: left; padding: 4px 12px 4px 0; vertical-align: top; }
+    .ident th { color: var(--muted); font-weight: 600; white-space: nowrap; }
     * {
       box-sizing: border-box;
     }
@@ -141,19 +144,26 @@
     <div class="card">
       <p class="eyebrow">ReachTrail</p>
       <h1>プライバシーポリシー</h1>
-      <p class="updated">最終更新日: 2026-09-10</p>
+      <p class="updated">最終更新日: 2026-09-29</p>
+      <table class="ident">
+        <tr><th>対象アプリ</th><td>リチレイ（ReachTrail）</td></tr>
+        <tr><th>Google Play 掲載名</th><td>リチレイ</td></tr>
+        <tr><th>パッケージ名</th><td>net.riumu.reachtrail</td></tr>
+        <tr><th>提供者（デベロッパー名）</th><td>torifo（個人開発者）</td></tr>
+        <tr><th>連絡先</th><td><a href="mailto:progbot.clover@gmail.com">progbot.clover@gmail.com</a></td></tr>
+      </table>
 
       <p>
-        ReachTrail（リーチトレイル）は、基準地点からの距離と上下移動の手間をもとに、
-        ランチなどの「到達難易度」を記録するアプリです。本ポリシーでは、ReachTrail が
-        取り扱う情報とその目的を説明します。
+        リチレイ（ReachTrail）は、torifo が提供する、基準地点からの距離と上下移動の手間をもとに、
+        ランチなどの「到達難易度」を記録するアプリです。本ポリシーは Google Play で「リチレイ」として配信している Android 版、および Web 版・macOS 版に共通で適用され、
+        リチレイ が取り扱う情報とその目的を説明します。
       </p>
 
       <h2>1. 取得する情報</h2>
       <h3>1-1. アカウント情報（サーバーに保存）</h3>
       <p>
         ReachTrail の利用には Google アカウントでのサインインが必要です。サインイン時に
-        Google から受け取った以下の情報を、当方が運用する API サーバーに保存します。
+        Google から受け取った以下の情報を、提供者（torifo）が運用する API サーバーに保存します。
       </p>
       <ul>
         <li>Google アカウントの識別子（sub）</li>
@@ -170,7 +180,7 @@
       <h3>1-2. 利用者が作成したデータ（端末内に保存）</h3>
       <p>
         以下のデータは、端末のローカル保存領域（shared_preferences）に保存され、
-        当方のサーバーには送信されません。
+        提供者のサーバーには送信されません。
       </p>
       <ul>
         <li>基準地点（名称・緯度経度・階数・メモなど）</li>
@@ -181,7 +191,7 @@
       <h3>1-3. 位置情報（任意）</h3>
       <ul>
         <li>
-          <strong>位置情報（任意）</strong>：「現在地を使う」または検索起点で「現在地」を選んだときにのみ、
+          「現在地を使う」または検索起点で「現在地」を選んだときにのみ、
           端末の位置情報を 1 回取得します。取得した座標は、基準地点の位置候補として端末内に保存するか、
           店舗検索の起点として使います。バックグラウンドでは取得しません。
           位置情報の許可はいつでも端末の設定から取り消せます。
@@ -192,7 +202,7 @@
       <h3>2-1. 店舗検索（Yahoo! ローカルサーチ）</h3>
       <p>
         店舗や建物を検索すると、入力された<strong>検索キーワード</strong>と、
-        絞り込みに使う<strong>基準地点の緯度経度</strong>が、当方が運用する API
+        絞り込みに使う<strong>基準地点の緯度経度</strong>が、提供者が運用する API
         プロキシを経由して Yahoo! JAPAN の「Yahoo!ローカルサーチAPI」に送信されます。
         プロキシは検索内容を保存せず、そのまま中継します。
       </p>
