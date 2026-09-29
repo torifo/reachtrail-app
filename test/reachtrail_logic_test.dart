@@ -428,8 +428,12 @@ void main() {
   });
 
   test('yahoo proxy 401 and 429 surface typed Japanese messages', () async {
-    Future<void> expectMessage(int status, Matcher matcher) async {
-      final client = MockClient((_) async => http.Response('{}', status));
+    Future<void> expectMessage(
+      int status,
+      Matcher matcher, {
+      String body = '{}',
+    }) async {
+      final client = MockClient((_) async => http.Response(body, status));
       await expectLater(
         YahooLocalSearchService(
           'dummy',
@@ -448,6 +452,13 @@ void main() {
 
     await expectMessage(401, contains('サインイン'));
     await expectMessage(429, contains('しばらく'));
+    // The shared daily quota is a different situation from a per-user burst:
+    // waiting a minute will not help, and the user should hear that.
+    await expectMessage(
+      429,
+      allOf(contains('本日'), contains('明日')),
+      body: '{"error":"quota","reason":"daily_quota"}',
+    );
   });
 
   test('base location with missing or non-numeric coordinates is rejected', () {

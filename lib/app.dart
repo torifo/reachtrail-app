@@ -10,6 +10,7 @@ import 'package:flutter/services.dart'
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:latlong2/latlong.dart' as latlong;
+import 'package:url_launcher/url_launcher.dart';
 
 import 'models/base_location.dart';
 import 'models/dine_challenge_record.dart';
@@ -1828,6 +1829,7 @@ class _BaseLocationTabState extends State<_BaseLocationTab> {
                     onSelect: () => _selectBaseCandidate(place),
                   ),
                 ),
+                YahooCreditFor(places: controller.baseSearchResults),
                 TextFormField(
                   controller: _nameController,
                   decoration: const InputDecoration(labelText: '拠点名'),
@@ -2782,6 +2784,7 @@ class _RegisterTabState extends State<_RegisterTab> {
                           ),
                         ),
                       ),
+                    YahooCreditFor(places: controller.searchResults),
                   ],
                 ),
         ),
@@ -3323,7 +3326,7 @@ class _EmptyCandidateState extends StatelessWidget {
             buildingSearchError!,
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
-        if (buildingSearchResults.isNotEmpty)
+        if (buildingSearchResults.isNotEmpty) ...[
           ...buildingSearchResults.map(
             (place) => _BuildingCandidateTile(
               place: place,
@@ -3331,6 +3334,8 @@ class _EmptyCandidateState extends StatelessWidget {
               onUse: () => onUseBuildingCandidate(place),
             ),
           ),
+          YahooCreditFor(places: buildingSearchResults),
+        ],
       ],
     );
   }
@@ -3998,6 +4003,51 @@ class _CandidateMap extends StatelessWidget {
 }
 
 /// OpenStreetMap's tile usage policy requires visible attribution on every map.
+/// Credit required by the Yahoo! JAPAN Web API guidelines on every screen
+/// that shows results from the API. Tapping it opens the developer network
+/// page, which is where the guideline asks the credit to link.
+class _YahooCredit extends StatelessWidget {
+  const _YahooCredit();
+
+  static final Uri _url = Uri.parse('https://developer.yahoo.co.jp/sitemap/');
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: TextButton.icon(
+        style: TextButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
+        onPressed: () =>
+            unawaited(launchUrl(_url, mode: LaunchMode.externalApplication)),
+        icon: const Icon(Icons.open_in_new, size: 14),
+        label: Text(
+          'Web Services by Yahoo! JAPAN',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+    );
+  }
+}
+
+/// Renders the Yahoo credit when any of [places] came from Yahoo; public so
+/// the rule can be tested without driving a live search.
+class YahooCreditFor extends StatelessWidget {
+  const YahooCreditFor({super.key, required this.places});
+
+  final List<Place> places;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!places.any((place) => place.provider == 'yahoo')) {
+      return const SizedBox.shrink();
+    }
+    return const _YahooCredit();
+  }
+}
+
 class _OpenStreetMapAttribution extends StatelessWidget {
   const _OpenStreetMapAttribution();
 

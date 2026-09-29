@@ -386,6 +386,14 @@ class YahooLocalSearchService implements PlaceSearchService {
       throw const SessionExpiredException();
     }
     if (response.statusCode == 429) {
+      // The proxy tells the two limits apart: a per-user burst clears in a
+      // minute, the shared daily quota does not.
+      if (response.body.contains('daily_quota')) {
+        throw const PlaceSearchConfigurationException(
+          '本日の店舗検索の上限に達しました。明日また利用できます。'
+          '自分で登録したお店の検索と記録は引き続き使えます。',
+        );
+      }
       throw const PlaceSearchConfigurationException(
         '検索リクエストが多すぎます。しばらく待ってからお試しください。',
       );
