@@ -16,6 +16,7 @@ class ReachTrailApiConfig {
     required this.userStorePath,
     required this.allowedOrigins,
     required this.yahooApiKey,
+    this.yahooDailyQuota = 45000,
   });
 
   factory ReachTrailApiConfig.fromEnvironment() {
@@ -43,6 +44,11 @@ class ReachTrailApiConfig {
           './data/reachtrail-users.json',
       allowedOrigins: allowedOrigins,
       yahooApiKey: Platform.environment['YAHOO_API_KEY'] ?? '',
+      // Yahoo! JAPAN caps one application id at 50,000 calls a day; stop a
+      // little short so a burst never trips the upstream limit for everyone.
+      yahooDailyQuota:
+          int.tryParse(Platform.environment['YAHOO_DAILY_QUOTA'] ?? '') ??
+          45000,
     );
   }
 
@@ -52,6 +58,9 @@ class ReachTrailApiConfig {
   final String userStorePath;
   final Set<String> allowedOrigins;
   final String yahooApiKey;
+
+  /// Upstream calls allowed per calendar day (JST) across all users.
+  final int yahooDailyQuota;
 }
 
 class ReachTrailUser {
@@ -414,6 +423,38 @@ class RateLimiter {
   }
 }
 
+/// Counts upstream calls per calendar day so the shared Yahoo! JAPAN quota
+/// is never exhausted by normal traffic. Days roll over at midnight JST, the
+/// same boundary Yahoo uses for the application id.
+class DailyQuota {
+  DailyQuota({required this.limit});
+
+  final int limit;
+  String _day = '';
+  int _count = 0;
+
+  static String dayKeyFor(DateTime at) {
+    final jst = at.toUtc().add(const Duration(hours: 9));
+    return '${jst.year}-${jst.month}-${jst.day}';
+  }
+
+  int get used => _count;
+
+  /// Reserves one call; returns false when the day's budget is spent.
+  bool allow({DateTime? now}) {
+    final key = dayKeyFor(now ?? DateTime.now());
+    if (key != _day) {
+      _day = key;
+      _count = 0;
+    }
+    if (_count >= limit) {
+      return false;
+    }
+    _count++;
+    return true;
+  }
+}
+
 class _RateWindow {
   _RateWindow({required this.startedAt, required this.count});
 
@@ -439,6 +480,7 @@ Handler buildHandler(ReachTrailApiConfig config) {
   final sessionIssuer = SessionTokenIssuer(config.sessionSecret);
   final sessionVerifier = SessionTokenVerifier(config.sessionSecret);
   final rateLimiter = RateLimiter();
+  final dailyQuota = DailyQuota(limit: config.yahooDailyQuota);
 
   /// Resolves the caller's user id from the bearer token, or null when the
   /// request is not authenticated.
@@ -562,6 +604,13 @@ Handler buildHandler(ReachTrailApiConfig config) {
     if (!rateLimiter.allow(userId)) {
       return _jsonResponse(429, {
         'error': 'Too many search requests. Please retry in a minute.',
+        'reason': 'user_rate_limit',
+      });
+    }
+    if (!dailyQuota.allow()) {
+      return _jsonResponse(429, {
+        'error': 'The daily search quota is exhausted. Please retry tomorrow.',
+        'reason': 'daily_quota',
       });
     }
 

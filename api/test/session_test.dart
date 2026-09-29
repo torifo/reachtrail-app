@@ -156,4 +156,25 @@ void main() {
       );
     });
   });
+
+  group('DailyQuota', () {
+    test('allows up to the limit within one JST day, then rejects', () {
+      final quota = DailyQuota(limit: 2);
+      final at = DateTime.utc(2026, 1, 1, 3); // 12:00 JST
+
+      expect(quota.allow(now: at), isTrue);
+      expect(quota.allow(now: at), isTrue);
+      expect(quota.allow(now: at), isFalse);
+      expect(quota.used, 2);
+    });
+
+    test('rolls over at midnight JST, not UTC', () {
+      final quota = DailyQuota(limit: 1);
+      // 14:59 UTC = 23:59 JST, still the same JST day.
+      expect(quota.allow(now: DateTime.utc(2026, 1, 1, 14, 59)), isTrue);
+      expect(quota.allow(now: DateTime.utc(2026, 1, 1, 14, 59)), isFalse);
+      // 15:00 UTC = 00:00 JST next day.
+      expect(quota.allow(now: DateTime.utc(2026, 1, 1, 15)), isTrue);
+    });
+  });
 }
